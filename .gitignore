@@ -1,0 +1,28 @@
+# 密钥与环境
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.uv/
+*.egg-info/
+.ipynb_checkpoints/
+
+# 向量库 / 本地数据缓存
+*.faiss
+*.sqlite
+.chroma/
+chroma/
+data/cache/
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/
+*.log
