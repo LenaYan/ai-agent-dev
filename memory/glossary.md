@@ -7,7 +7,7 @@ Agent 领域关键术语，按需追加。每条：术语 · 一句话定义 · 
 ---
 
 - **Agent** — 由 LLM 驱动、能自主决定"下一步做什么"并调用工具与环境交互的系统。区别于纯问答：有循环、有状态、有工具。
-- **ReAct** — Reason + Act 交替的提示范式：模型先推理再行动（调工具），观察结果后继续。多数早期 agent 循环的基础。
+- **ReAct** — Reason + Act（Reasoning and Acting）交替的提示范式：模型先推理再行动（调工具），观察结果后继续。多数早期 agent 循环的基础。⚠️ 是 Reason + **Act**，不是「Reason + Actor」。
 - **Tool / Function Calling** — 让模型以结构化方式请求调用外部函数/API 的能力；agent 与外界交互的主要手段。
 - **RAG** — Retrieval-Augmented Generation：检索外部知识注入上下文再生成，缓解幻觉与知识过时。
 - **MCP (Model Context Protocol)** — Anthropic 提出的开放协议，标准化 agent/LLM 与外部工具、数据源的连接（可类比"AI 的 USB-C"）。
@@ -17,3 +17,6 @@ Agent 领域关键术语，按需追加。每条：术语 · 一句话定义 · 
 - **LangSmith** — LangChain 公司的闭源可观测/评估 SaaS：tracing、调试、eval、监控（LLM 版 APM）。框架无关，但对 LangChain/LangGraph 零配置接入。
 - **Langfuse** — 与 LangSmith 同类，但开源、可自托管、框架中立的第三方（与 LangChain 无关）。自托管/数据不出内网/去绑定 → 选它。
 - **LCEL** — LangChain Expression Language，用 `|` 管道语法把组件串成 chain。
+- **Workflow vs Agent** — Workflow：预定义控制流里编排多次模型调用（决策树清晰时用）；Agent：模型自主决定行动路径并按环境反馈行动（问题空间模糊、高价值、可验证时才用）。核心判断见 effective-agents-principles.md。
+- **Blackboard（黑板系统）** — 经典 AI 协作范式：多 agent 共享一块知识库/状态，机会式读写，状态变化驱动行动。≠ LangGraph（后者是图/状态机编排）。
+- **DAG vs 图（含环）** — Airflow/Prefect 等是 DAG（有向无环，不能循环）；LangGraph 的卖点恰是**支持环（cycle）**，能循环回退，故不是 DAG。
