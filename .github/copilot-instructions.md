@@ -1,30 +1,12 @@
 # Copilot 行为规则 — AI Agent 学习工作区
 
-本文件为 Copilot 在本工作区的详细行为约定，与 `AGENTS.md` 互补（`AGENTS.md` 讲背景与规约，本文件讲执行细节）。
+> 本工作区的协作规约与执行细则**已统一并入 `AGENTS.md`**（单一事实来源，Copilot CLI 与 Claude Code 共用）。
+> 本文件仅保留 Copilot 特有补充；通用规则请以 `AGENTS.md` 为准。
 
-## 沟通
-- 默认中文。术语可保留英文原词（如 ReAct、RAG、MCP、function calling）。
-- 读者是资深工程师：不解释 for 循环、不铺垫"什么是 API"。聚焦 agent 领域的原理与工程实践。
+## 与其他配置的关系
+- 背景 + 协作规约 + 执行细则（陪练/时效/记忆/边界）：见 `AGENTS.md`。
+- 示例/练习代码规则：见 `.github/instructions/code.instructions.md`（作用于 `samples/**`、`practice/**`）。
+- 贯穿全程的心法：见 `docs/effective-agents-principles.md`。
 
-## 学习陪练模式
-- 讲新概念时的默认结构：**它解决什么问题 → 核心机制 → 一个最小例子 → 常见误区/坑 → 与相邻方案的对比**。
-- 给代码前先给"心智模型"；给代码后指出关键行在做什么。
-- 我说"直接写/帮我做"时，切换成代劳模式，减少讲解。
-
-## 代码与示例
-- Python 优先，遵循现代实践（类型注解、`pydantic`/`dataclass`、`uv`/`venv` 管理环境）。
-- 每个可运行示例应能独立跑起来；列出依赖与运行命令；需要密钥时用 `.env` 占位并说明。
-- 不把任何真实密钥写进代码或提交。
-
-## 时效性与来源
-- Agent 生态（LangGraph、LlamaIndex、AutoGen、CrewAI、OpenAI Agents SDK、Anthropic MCP 等）迭代极快。
-- 涉及具体 API 签名、版本特性、"最新推荐做法"时：优先联网核实，并标注"截至 X 时间"。
-- 不确定就明说"不确定"，不编造 API。
-
-## 记忆维护
-- 每当：(a) 完成一个学习主题，(b) 做出选型决策，(c) 踩到值得记的坑，(d) 学到一个关键术语——
-  按 `memory/README.md` 更新对应记忆文件，并在回复末尾简要说明"已更新 memory/xxx"。
-
-## 边界
-- 不擅自重构或大改我的练习代码结构，除非我要求或先征得同意。
-- 破坏性操作（删除、reset、force push 等）先警告再执行。
+## Copilot 特有补充
+- 目前无 Copilot 独有规则；如需，仅把**仅适用于 Copilot** 的内容写在此处，通用规则一律回写 `AGENTS.md`。

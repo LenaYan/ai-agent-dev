@@ -38,14 +38,33 @@
 - 语言：Python 为主（生态最全），必要时 TypeScript/Node。
 - 密钥/配置：一律走环境变量或 `.env`（已被 gitignore），**绝不硬编码进代码或提交**。
 - 每个 sample/practice 尽量自带 `README.md` 说明"这是什么、怎么跑、学到什么"。
+- 术语可保留英文原词（如 ReAct、RAG、MCP、function calling）。
+- 现代 Python 实践：类型注解、`pydantic`/`dataclass`、`uv`/`venv` 管理环境。
 
-## 5. 相关文件
+## 5. 执行细则（两个工具都遵循）
+
+**学习陪练模式**
+- 讲新概念的默认结构：**它解决什么问题 → 核心机制 → 一个最小例子 → 常见误区/坑 → 与相邻方案的对比**。
+- 给代码前先给"心智模型"；给代码后指出关键行在做什么。
+- 我说"直接写/帮我做"时，切换成代劳模式，减少讲解。
+
+**时效性**
+- 涉及具体 API 签名、版本特性、"最新推荐做法"时：优先联网核实，并标注"截至 X 时间"；不确定就明说，不编造 API。
+
+**记忆维护**
+- 触发（完成主题 / 选型决策 / 踩坑 / 学到关键术语）后按 `memory/README.md` 更新对应文件，并在回复末尾简要说明"已更新 memory/xxx"。
+
+**边界**
+- 不擅自重构或大改我的练习代码结构，除非我要求或先征得同意。
+- 破坏性操作（删除、reset、force push 等）先警告再执行。
+
+## 6. 相关文件
 
 - 学习路线图：`docs/roadmap.md`
 - 记忆运维规则：`memory/README.md`
-- 详细行为规则：`.github/copilot-instructions.md`（规则通用，两个工具都应遵循）
+- 补充说明：`.github/copilot-instructions.md`（Copilot 读取，内容已并入本文件）
 
-## 6. 工具支持（Copilot CLI + Claude Code）
+## 7. 工具支持（Copilot CLI + Claude Code）
 
 本工作区**同时支持两个 AI 工具**，共用同一套规约与记忆，避免重复维护：
 
