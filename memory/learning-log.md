@@ -12,6 +12,11 @@
 
 ---
 
+## 2026-07-06 — Agent 架构模式目录
+- 收获：架构分三正交维度（A单Agent推理范式/B多Agent拓扑/C编排基础设施）+ 跨维度Router+Skill，不是1→7进化线。核心原则「简单优先」，多Agent默认不用。纠正社区分享的硬伤：ReAct=Reason+Act(非Actor)、LangGraph支持环非DAG、LangGraph≠Blackboard、Airflow/Prefect非agent框架、Router+Skill非AI-coding唯一最佳实践。
+- 产出：docs/agent-architecture-patterns.md（对一份社区分享的修正重构）
+- 下一步：手写「LLM+工具调用」最小循环。
+
 ## 2026-07-06 — LangChain 生态辨析
 - 收获：LangChain(组件库)/LangGraph(图状态机编排,生产主推)/LangSmith(闭源观测评估)/Langfuse(开源第三方观测)。前三同公司,Langfuse无关。构建层 vs 观测层两个维度,非替代关系。LangGraph 的 State/Node/Edge/reducer 是核心。
 - 产出：docs/langchain-ecosystem.md、glossary 新增 5 条术语
