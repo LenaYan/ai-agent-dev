@@ -6,7 +6,8 @@
 
 ```
 .
-├── AGENTS.md                     # 基础配置：背景 + 协作规约（cwd 自动加载）
+├── AGENTS.md                     # 基础配置：背景 + 协作规约（单一事实来源）
+├── CLAUDE.md                     # Claude Code 入口，@导入 AGENTS.md（双工具支持）
 ├── .github/
 │   ├── copilot-instructions.md   # Copilot 详细行为规则
 │   └── instructions/             # 按路径生效的细分规则

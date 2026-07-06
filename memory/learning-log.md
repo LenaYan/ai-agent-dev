@@ -12,6 +12,11 @@
 
 ---
 
+## 2026-07-06 — 支持 Copilot CLI + Claude Code 双工具
+- 收获：Claude Code 默认只读 CLAUDE.md（不读 AGENTS.md），Copilot 两者都读。以 AGENTS.md 为单一事实来源，CLAUDE.md 用 @AGENTS.md 导入桥接，避免重复维护。工具专属配置分放 .github/ 与 .claude/。
+- 产出：CLAUDE.md、AGENTS.md §6、.gitignore、ADR-0003
+- 下一步：手写「模型在循环里用工具」最小骨架。
+
 ## 2026-07-06 — 构建有效 Agent 三原则（Anthropic）
 - 收获：一手权威源（Barry Zhang & Erik Schluntz）。①不要什么都做成 Agent（workflow vs agent，用复杂度/价值/可行性/错误成本 4 条清单判断；写代码是好场景因为可用单测/CI验证）②尽可能久地保持简单（Agent=模型在循环里用工具，骨架=环境+工具+SystemPrompt，功夫在工具设计+prompt）③像 Agent 一样思考（=上下文工程，用模型 debug 模型）。核心：有廉价验证回路的任务才适合高自主 Agent。已升格为工作区默认心法。
 - 产出：docs/effective-agents-principles.md，并在 AGENTS.md/roadmap.md 引用

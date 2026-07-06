@@ -26,3 +26,6 @@ data/cache/
 .idea/
 .vscode/
 *.log
+
+# Claude Code 本地设置（个人级，不入库）
+.claude/settings.local.json

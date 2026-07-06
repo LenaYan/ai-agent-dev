@@ -43,4 +43,14 @@
 
 - 学习路线图：`docs/roadmap.md`
 - 记忆运维规则：`memory/README.md`
-- Copilot 详细行为规则：`.github/copilot-instructions.md`
+- 详细行为规则：`.github/copilot-instructions.md`（规则通用，两个工具都应遵循）
+
+## 6. 工具支持（Copilot CLI + Claude Code）
+
+本工作区**同时支持两个 AI 工具**，共用同一套规约与记忆，避免重复维护：
+
+- **本文件 `AGENTS.md` 是单一事实来源**。
+- `CLAUDE.md` 通过 `@AGENTS.md` 导入本文件，供 Claude Code 读取（Claude Code 默认不读 `AGENTS.md`）。
+- Copilot CLI 直接读 `AGENTS.md`；Claude Code 经由 `CLAUDE.md` 读同样内容。
+- 修改规约时**只改 `AGENTS.md`**，两个工具自动同步。
+- 工具专属配置各自放：Copilot → `.github/`；Claude Code → `.claude/`（如需自定义命令/子代理）。
