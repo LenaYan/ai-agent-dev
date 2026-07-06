@@ -23,6 +23,8 @@
 
 ## 3. 协作规约（给 AI 助手）
 
+> 贯穿全程的心法见 `docs/effective-agents-principles.md`（Anthropic《Building Effective Agents》）：①不要什么都做成 Agent（先问 workflow 是否更对）②尽可能久地保持简单 ③像你的 Agent 一样思考。设计任何 Agent 时默认遵循。
+
 1. **默认中文沟通。**
 2. **面向资深工程师**：跳过基础语法解释，聚焦架构、原理、权衡、坑。可以直接用行话。
 3. **教学优先于代劳**：学习场景下，先解释"为什么这样设计"，再给代码；除非我明确说"直接帮我写"。

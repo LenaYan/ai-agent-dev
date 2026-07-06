@@ -75,6 +75,7 @@ Agent 的"记性"决定它能力上限。
 ---
 
 ## 贯穿始终的习惯
+- **默认遵循 `effective-agents-principles.md` 三原则**：先问该不该做 Agent（workflow 常更对）· 尽可能久地保持简单 · 像 Agent 一样思考（练上下文工程）。
 - 每个主题都动手写最小可运行 sample，别只看不练。
 - 学完更新 `memory/`（日志/决策/术语/坑）。
 - 关注 prompt injection 与密钥安全，从第一天养成。

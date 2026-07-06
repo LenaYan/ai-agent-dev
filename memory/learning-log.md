@@ -12,6 +12,11 @@
 
 ---
 
+## 2026-07-06 — 构建有效 Agent 三原则（Anthropic）
+- 收获：一手权威源（Barry Zhang & Erik Schluntz）。①不要什么都做成 Agent（workflow vs agent，用复杂度/价值/可行性/错误成本 4 条清单判断；写代码是好场景因为可用单测/CI验证）②尽可能久地保持简单（Agent=模型在循环里用工具，骨架=环境+工具+SystemPrompt，功夫在工具设计+prompt）③像 Agent 一样思考（=上下文工程，用模型 debug 模型）。核心：有廉价验证回路的任务才适合高自主 Agent。已升格为工作区默认心法。
+- 产出：docs/effective-agents-principles.md，并在 AGENTS.md/roadmap.md 引用
+- 下一步：手写「模型在循环里用工具」最小骨架。
+
 ## 2026-07-06 — Agent 架构模式目录
 - 收获：架构分三正交维度（A单Agent推理范式/B多Agent拓扑/C编排基础设施）+ 跨维度Router+Skill，不是1→7进化线。核心原则「简单优先」，多Agent默认不用。纠正社区分享的硬伤：ReAct=Reason+Act(非Actor)、LangGraph支持环非DAG、LangGraph≠Blackboard、Airflow/Prefect非agent框架、Router+Skill非AI-coding唯一最佳实践。
 - 产出：docs/agent-architecture-patterns.md（对一份社区分享的修正重构）
