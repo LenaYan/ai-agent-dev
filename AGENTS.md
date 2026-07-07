@@ -72,4 +72,6 @@
 - `CLAUDE.md` 通过 `@AGENTS.md` 导入本文件，供 Claude Code 读取（Claude Code 默认不读 `AGENTS.md`）。
 - Copilot CLI 直接读 `AGENTS.md`；Claude Code 经由 `CLAUDE.md` 读同样内容。
 - 修改规约时**只改 `AGENTS.md`**，两个工具自动同步。
-- 工具专属配置各自放：Copilot → `.github/`；Claude Code → `.claude/`（如需自定义命令/子代理）。
+- **路径级规则同样单源**：正文在 `.github/instructions/code.instructions.md`；Copilot 经 frontmatter `applyTo` 生效，Claude Code 经 `samples/CLAUDE.md`、`practice/CLAUDE.md` 的导入桥生效。改规则只改正文文件。
+- **记忆分工**：项目事实一律写工作区 `memory/`（两个工具共读写）；工具原生记忆（Copilot `/memory`、Claude Code 持久记忆）只放工具偏好与指针。详见 `memory/README.md`。
+- 工具专属配置各自放：Copilot → `.github/`；Claude Code → `.claude/`（项目级权限白名单在 `.claude/settings.json`，个人级覆盖用 `settings.local.json`，已 gitignore）。

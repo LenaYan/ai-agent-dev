@@ -10,6 +10,6 @@
 ## Claude Code 专属补充
 
 - 协作规约与执行细则（陪练/时效/记忆/边界）已全部在 `AGENTS.md`（上方已导入）。
-- 示例/练习代码规则见 `.github/instructions/code.instructions.md`（作用于 `samples/**`、`practice/**`）。
+- 示例/练习代码规则见 `.github/instructions/code.instructions.md`（作用于 `samples/**`、`practice/**`；已通过 `samples/CLAUDE.md`、`practice/CLAUDE.md` 导入桥自动生效，无需手动查阅）。
 - 跨会话记忆系统见 `memory/README.md`，完成学习单元/决策/踩坑后按其规则更新。
 - 贯穿全程的心法见 `docs/effective-agents-principles.md`。

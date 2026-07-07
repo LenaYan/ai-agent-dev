@@ -35,3 +35,10 @@
 - 理由：Copilot 已直接读 AGENTS.md，Claude Code 默认只读 CLAUDE.md；导入方式让两者共享一份、几乎无重复。
 - 取舍/放弃项：放弃 symlink 方案（Copilot 会重复载入同一文件）与双份全量文件（必然漂移）。依赖 Claude Code 的 @import 语法，未来若变需调整。
 - 影响：改规约只改 AGENTS.md；工具专属配置分别放 .github/ 与 .claude/。
+
+## ADR-0004 — 双工具对称性推进到路径级规则与记忆治理  (2026-07-06)
+- 背景：ADR-0003 的单源架构只覆盖全局规约。路径级规则（`applyTo` frontmatter）是 Copilot 专属机制，对 Claude Code 不生效；且三套记忆（工作区 memory/、Copilot `/memory`、Claude Code 自带持久记忆）没有分工规则，存在"两个工具记得的东西发散"的风险。
+- 决定：① `samples/`、`practice/` 各放一个导入桥 CLAUDE.md，指向 `.github/instructions/code.instructions.md`；② 新增项目级 `.claude/settings.json`，白名单放行 uv/python/pytest 等验证类命令；③ `memory/README.md` 明确"项目事实只写工作区 memory/，工具原生记忆只放工具偏好与指针"。
+- 理由：延续 ADR-0003 的"内容单源 + 工具侧薄适配"模式；权限白名单让"动手即验证"原则不被权限提示打断。
+- 取舍/放弃项：权限配置无法跨工具共享，接受两边各配一份；暂不固化自定义命令/skills（等某流程真的重复三五次再做，遵循"尽可能久地保持简单"）。
+- 影响：路径级规则改动仍只改 code.instructions.md；新增 `.claude/` 目录入库（settings.local.json 仍被 gitignore）。
