@@ -20,6 +20,7 @@
 | `practice/` | 正式一点的练习项目（有结构、可迭代） |
 | `notes/` | 零散速记、临时想法、待整理素材 |
 | `memory/` | **跨会话记忆**（见 `memory/README.md`），AI 的长期上下文 |
+| `sessions/` | 重要会话的完整存档（过程与推理链条）。**结论仍以 `memory/` 为准**，见 `sessions/README.md` |
 
 ## 3. 协作规约（给 AI 助手）
 
