@@ -49,3 +49,10 @@
 - 理由：learning-log 的"下一步"字段天然是交接文档；WIP commit 的代价（历史不干净）远低于状态丢失的代价。
 - 取舍/放弃项：不追求两工具行为一致（system prompt/工具集不同，口吻差异不可消除也无害）；工具私有记忆（Claude 持久记忆、Copilot /memory）接受不同步，靠 ADR-0004 降级为指针。
 - 影响：两个工具在会话收尾应主动提醒 commit & push；密钥与 uv 环境需两台机器各配一次。
+
+## 2026-07-24 — 课标知识图项目定位为「流水线」而非「数据集」
+- 决策：不做"中国版 Marble 数据集"，做"能生成并自校验知识依赖图的多 agent 流水线"，用小学数学当验证领域。
+- 为什么：依赖边正确性没有形式化验证方法（图无环、年级单调 CI 能查，但"A 是不是 B 的前置"只有教过书的人知道）。教研审核是真正瓶颈，靠工程补不上。而流水线是可复用能力，换个领域（法规、内部文档、合规）立刻能用。
+- 取舍：放弃"产出可信数据集"这个目标，换来教研审核不到位不再是致命伤，而是一个诚实标注的已知局限（schema 里 Provenance.review_status 默认 unreviewed，MISSING_PROVENANCE 是 CI 硬错误）。
+- 按第 3 层次（开源/产品）的标准设计 schema 和 provenance，将来升级不用推倒重来。真要产品化需先解决：教研员审核背书 + 课标著作权法律意见。
+- 详见 practice/cn-curriculum-graph/docs/feasibility-analysis.md、docs/schema-design.md（D1-D8 逐条决策）

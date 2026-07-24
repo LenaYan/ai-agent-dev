@@ -1,0 +1,346 @@
+{
+  "$defs": {
+    "Dependency": {
+      "additionalProperties": false,
+      "description": "先修边：掌握 topic_id 之前必须（hard）/最好（soft）先掌握 prerequisite_id。",
+      "properties": {
+        "topic_id": {
+          "title": "Topic Id",
+          "type": "string"
+        },
+        "prerequisite_id": {
+          "title": "Prerequisite Id",
+          "type": "string"
+        },
+        "strength": {
+          "enum": [
+            "hard",
+            "soft"
+          ],
+          "title": "Strength",
+          "type": "string"
+        },
+        "reason": {
+          "description": "一句话说明为什么是前置，供 LLM 直接用于讲解",
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "topic_id",
+        "prerequisite_id",
+        "strength",
+        "reason"
+      ],
+      "title": "Dependency",
+      "type": "object"
+    },
+    "Misconception": {
+      "additionalProperties": false,
+      "description": "典型误概念。\n\n这是本 schema 相对 Marble 最有价值的增量：有了它，LLM 才能从\n\"孩子答错了\"推进到\"孩子为什么这么想\"。",
+      "properties": {
+        "statement": {
+          "description": "孩子会怎么想，用孩子的口吻，如「0.45 比 0.405 大，因为 45 比 405 小」",
+          "title": "Statement",
+          "type": "string"
+        },
+        "probe": {
+          "description": "能诱发这个错误的提问，用于确认是否真的存在该误概念",
+          "title": "Probe",
+          "type": "string"
+        },
+        "correction_hint": {
+          "description": "纠正的切入点，不是标准答案，是该往哪儿引",
+          "title": "Correction Hint",
+          "type": "string"
+        }
+      },
+      "required": [
+        "statement",
+        "probe",
+        "correction_hint"
+      ],
+      "title": "Misconception",
+      "type": "object"
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "description": "每节点的来源与审核状态。\n\nMarble 最大的信任缺口就是没有这个 —— 其 PROVENANCE.md 通篇讲授权、\n不讲生产方法，导致数据可信度无从判断。这里从第一天就记。",
+      "properties": {
+        "method": {
+          "description": "生成方式，如 llm-extract/gpt-x、hand-authored",
+          "title": "Method",
+          "type": "string"
+        },
+        "review_status": {
+          "default": "unreviewed",
+          "enum": [
+            "unreviewed",
+            "self_reviewed",
+            "expert_reviewed"
+          ],
+          "title": "Review Status",
+          "type": "string"
+        },
+        "reviewer": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reviewer"
+        },
+        "reviewed_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "ISO 日期 YYYY-MM-DD",
+          "title": "Reviewed At"
+        },
+        "confidence": {
+          "default": 0.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Confidence",
+          "type": "number"
+        }
+      },
+      "required": [
+        "method"
+      ],
+      "title": "Provenance",
+      "type": "object"
+    },
+    "Revisit": {
+      "additionalProperties": false,
+      "description": "螺旋上升边：同一概念在更高年级的再次出现。\n\n例：分数在三上（初步认识）→ 五下（意义与性质）→ 六上（分数除法）。\n这不是先修关系（它本来就是同一个概念），扁平 DAG 表达不了这件事。",
+      "properties": {
+        "earlier_id": {
+          "title": "Earlier Id",
+          "type": "string"
+        },
+        "later_id": {
+          "title": "Later Id",
+          "type": "string"
+        },
+        "note": {
+          "description": "这一轮相对上一轮深化了什么",
+          "minLength": 1,
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "earlier_id",
+        "later_id",
+        "note"
+      ],
+      "title": "Revisit",
+      "type": "object"
+    },
+    "Standard": {
+      "additionalProperties": false,
+      "description": "课标条目对齐 —— 只存编号，不存原文。\n\n与 Marble 对 NGSS / C3 / IB PYP 的 codes-only 策略一致。\n法律依据与不确定性见 docs/feasibility-analysis.md 第二节。",
+      "properties": {
+        "curriculum": {
+          "description": "课标标识，如 cn-moe-math-2022",
+          "title": "Curriculum",
+          "type": "string"
+        },
+        "code": {
+          "description": "条目编号，如 3.1.2",
+          "title": "Code",
+          "type": "string"
+        }
+      },
+      "required": [
+        "curriculum",
+        "code"
+      ],
+      "title": "Standard",
+      "type": "object"
+    },
+    "TextbookUnit": {
+      "additionalProperties": false,
+      "description": "教材单元对齐 —— 第二层坐标。\n\n只存版本+册次+单元号+单元名（事实性描述），不含教材正文、例题、习题。",
+      "properties": {
+        "edition": {
+          "description": "版本，如 人教版",
+          "title": "Edition",
+          "type": "string"
+        },
+        "volume": {
+          "description": "册次，如 四年级下册",
+          "title": "Volume",
+          "type": "string"
+        },
+        "unit": {
+          "description": "单元号，如 4",
+          "title": "Unit",
+          "type": "string"
+        },
+        "title": {
+          "description": "单元名，如 小数的意义和性质",
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "edition",
+        "volume",
+        "unit",
+        "title"
+      ],
+      "title": "TextbookUnit",
+      "type": "object"
+    },
+    "Topic": {
+      "additionalProperties": false,
+      "description": "一个 micro-topic：一个可教、可评的最小知识单元。",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "conceptual",
+            "procedural",
+            "representational",
+            "language",
+            "meta"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "subject": {
+          "title": "Subject",
+          "type": "string"
+        },
+        "domain": {
+          "title": "Domain",
+          "type": "string"
+        },
+        "grade_start": {
+          "maximum": 9,
+          "minimum": 1,
+          "title": "Grade Start",
+          "type": "integer"
+        },
+        "grade_end": {
+          "maximum": 9,
+          "minimum": 1,
+          "title": "Grade End",
+          "type": "integer"
+        },
+        "evidence": {
+          "description": "掌握判据，可观察可验证",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Evidence",
+          "type": "array"
+        },
+        "assessment_prompt": {
+          "description": "面向家长/教师的一句话口头评测提问",
+          "title": "Assessment Prompt",
+          "type": "string"
+        },
+        "misconceptions": {
+          "items": {
+            "$ref": "#/$defs/Misconception"
+          },
+          "title": "Misconceptions",
+          "type": "array"
+        },
+        "standards": {
+          "items": {
+            "$ref": "#/$defs/Standard"
+          },
+          "title": "Standards",
+          "type": "array"
+        },
+        "textbook_units": {
+          "items": {
+            "$ref": "#/$defs/TextbookUnit"
+          },
+          "title": "Textbook Units",
+          "type": "array"
+        },
+        "provenance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Provenance"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "description",
+        "type",
+        "subject",
+        "domain",
+        "grade_start",
+        "grade_end",
+        "evidence",
+        "assessment_prompt"
+      ],
+      "title": "Topic",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "整张图。",
+  "properties": {
+    "topics": {
+      "items": {
+        "$ref": "#/$defs/Topic"
+      },
+      "title": "Topics",
+      "type": "array"
+    },
+    "dependencies": {
+      "items": {
+        "$ref": "#/$defs/Dependency"
+      },
+      "title": "Dependencies",
+      "type": "array"
+    },
+    "revisits": {
+      "items": {
+        "$ref": "#/$defs/Revisit"
+      },
+      "title": "Revisits",
+      "type": "array"
+    }
+  },
+  "title": "中国课标知识依赖图",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

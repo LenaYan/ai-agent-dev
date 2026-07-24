@@ -1,0 +1,163 @@
+{
+  "topics": [
+    {
+      "id": "cn-math-frac-equal-share",
+      "name": "等分的意义",
+      "description": "理解把一个整体平均分成若干份，每份同样多；能判断一个分法是不是「平均分」",
+      "type": "conceptual",
+      "subject": "数学",
+      "domain": "数与代数",
+      "grade_start": 3,
+      "grade_end": 3,
+      "evidence": [
+        "看到一个被切成大小不等几块的饼，能说出这不是平均分",
+        "能把 12 个物品平均分成 4 份并说出每份是多少"
+      ],
+      "assessment_prompt": "把这块饼分成这样三块（大小不一），能说这是平均分成三份吗？为什么？",
+      "misconceptions": [
+        {
+          "statement": "只要分成了 3 块，就是三分之一",
+          "probe": "指着一个被切成大小不等三块的饼问：涂色的这块是三分之一吗？",
+          "correction_hint": "把注意力从「块数」引到「每块一样大」上，用可折叠的纸条对折验证"
+        }
+      ],
+      "standards": [{ "curriculum": "cn-moe-math-2022", "code": "3.1.1" }],
+      "textbook_units": [
+        {
+          "edition": "人教版",
+          "volume": "三年级上册",
+          "unit": "8",
+          "title": "分数的初步认识"
+        }
+      ],
+      "provenance": {
+        "method": "hand-authored",
+        "review_status": "unreviewed",
+        "confidence": 0.6
+      }
+    },
+    {
+      "id": "cn-math-frac-intro",
+      "name": "分数的初步认识",
+      "description": "认识几分之一和几分之几，能读写简单分数，理解分母表示平均分的份数、分子表示取的份数",
+      "type": "conceptual",
+      "subject": "数学",
+      "domain": "数与代数",
+      "grade_start": 3,
+      "grade_end": 3,
+      "evidence": [
+        "能读写 1/4、3/4 并说出各部分含义",
+        "能在图形上涂出指定分数"
+      ],
+      "assessment_prompt": "把一张纸平均分成 4 份，涂 3 份，这是几分之几？分母的 4 表示什么？",
+      "misconceptions": [
+        {
+          "statement": "分数是两个数，上面一个下面一个",
+          "probe": "1/2 和 1/3 哪个大？（把分数当两个独立整数看的孩子会答 1/3 大）",
+          "correction_hint": "回到「一个饼分给 2 个人 vs 分给 3 个人，谁分得多」的实物场景"
+        }
+      ],
+      "standards": [{ "curriculum": "cn-moe-math-2022", "code": "3.1.2" }],
+      "textbook_units": [
+        {
+          "edition": "人教版",
+          "volume": "三年级上册",
+          "unit": "8",
+          "title": "分数的初步认识"
+        }
+      ],
+      "provenance": {
+        "method": "hand-authored",
+        "review_status": "unreviewed",
+        "confidence": 0.6
+      }
+    },
+    {
+      "id": "cn-math-decimal-meaning",
+      "name": "小数的意义",
+      "description": "理解一位小数表示十分之几、两位小数表示百分之几，能在数线上定位小数",
+      "type": "conceptual",
+      "subject": "数学",
+      "domain": "数与代数",
+      "grade_start": 4,
+      "grade_end": 4,
+      "evidence": [
+        "能说出 0.3 就是十分之三",
+        "能把 0.45 写成 45/100",
+        "能解释 0.7 和 0.70 为什么一样大"
+      ],
+      "assessment_prompt": "0.45 和 0.54 哪个大？为什么？（要能说出理由，不只答对）",
+      "misconceptions": [
+        {
+          "statement": "小数点后面的数字越多，这个数越大（0.405 比 0.45 大）",
+          "probe": "0.45 和 0.405 哪个大？",
+          "correction_hint": "把两个数都补成三位小数（0.450 与 0.405）再比十分位"
+        }
+      ],
+      "standards": [{ "curriculum": "cn-moe-math-2022", "code": "4.1.3" }],
+      "textbook_units": [
+        {
+          "edition": "人教版",
+          "volume": "四年级下册",
+          "unit": "4",
+          "title": "小数的意义和性质"
+        }
+      ],
+      "provenance": {
+        "method": "hand-authored",
+        "review_status": "unreviewed",
+        "confidence": 0.6
+      }
+    },
+    {
+      "id": "cn-math-frac-meaning",
+      "name": "分数的意义和性质",
+      "description": "理解分数单位、分数与除法的关系、分数的基本性质，能约分通分",
+      "type": "conceptual",
+      "subject": "数学",
+      "domain": "数与代数",
+      "grade_start": 5,
+      "grade_end": 5,
+      "evidence": [
+        "能说出 3/4 的分数单位是 1/4",
+        "能用分数的基本性质把 2/3 化成 8/12 并解释为什么值不变"
+      ],
+      "assessment_prompt": "要把 2/3 变个样子但值不变，可以怎么做？为什么这样做值不会变？",
+      "standards": [{ "curriculum": "cn-moe-math-2022", "code": "5.1.2" }],
+      "textbook_units": [
+        {
+          "edition": "人教版",
+          "volume": "五年级下册",
+          "unit": "4",
+          "title": "分数的意义和性质"
+        }
+      ],
+      "provenance": {
+        "method": "hand-authored",
+        "review_status": "unreviewed",
+        "confidence": 0.6
+      }
+    }
+  ],
+  "dependencies": [
+    {
+      "topic_id": "cn-math-frac-intro",
+      "prerequisite_id": "cn-math-frac-equal-share",
+      "strength": "hard",
+      "reason": "分母表示平均分的份数，不理解「平均分」就无法理解分母的含义"
+    },
+    {
+      "topic_id": "cn-math-decimal-meaning",
+      "prerequisite_id": "cn-math-frac-intro",
+      "strength": "hard",
+      "reason": "一位小数就是十分之几，小数的意义建立在分数表示之上"
+    }
+  ],
+  "revisits": [
+    {
+      "earlier_id": "cn-math-frac-intro",
+      "later_id": "cn-math-frac-meaning",
+      "note": "三上只到直观认识几分之几；五下引入分数单位、分数与除法的关系、基本性质，从「看图说分数」进到「对分数做运算变形」"
+    }
+  ]
+}

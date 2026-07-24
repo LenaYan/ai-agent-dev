@@ -27,3 +27,8 @@
 - 解法：对需累加的字段用 Annotated[list, add] 之类的 reducer。
 - 备注：LangGraph 0.x，API 可能变化。
 -->
+
+## 2026-07-24 — 按单一 key 分组做报告会把高严重级藏进低严重级
+- 坑：格式化校验报告时按 `code` 分组，用 `group[0].severity` 决定整组的显示标记。同一 code 严重级可能不同（GRADE_INVERSION 在 hard 边是 ERROR、soft 边是 WARNING），结果 7 条 error 被显示成 warning 组，CI 看起来像只有警告。
+- 解法：按 `(code, severity)` 复合键分组。
+- 教训：分组键必须覆盖所有影响展示的维度。单测没抓到（测试数据同 code 同严重级），是跑真实数据才暴露的。
