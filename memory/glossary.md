@@ -20,3 +20,9 @@ Agent 领域关键术语，按需追加。每条：术语 · 一句话定义 · 
 - **Workflow vs Agent** — Workflow：预定义控制流里编排多次模型调用（决策树清晰时用）；Agent：模型自主决定行动路径并按环境反馈行动（问题空间模糊、高价值、可验证时才用）。核心判断见 effective-agents-principles.md。
 - **Blackboard（黑板系统）** — 经典 AI 协作范式：多 agent 共享一块知识库/状态，机会式读写，状态变化驱动行动。≠ LangGraph（后者是图/状态机编排）。
 - **DAG vs 图（含环）** — Airflow/Prefect 等是 DAG（有向无环，不能循环）；LangGraph 的卖点恰是**支持环（cycle）**，能循环回退，故不是 DAG。
+- **知识依赖图 / 先修图 (prerequisite graph / skill taxonomy)** — 把领域知识拆成细粒度节点、用「先修」有向边连接的结构化图，供 LLM 在其上做定位与调度。与传统知识图谱的区别：边带强弱与**人可读理由**、节点带掌握判据，是**为 LLM 消费**而非规则引擎设计的。代表：Marble os-taxonomy（2026-07 开源，1590 节点 / 3221 边）。
+- **hard vs soft 依赖** — 先修边的强弱标注：hard = 不掌握就学不动，soft = 有助于理解但非必需。工程含义：校验规则（如年级倒挂）不能一刀切，hard 边判 error、soft 边判 warning，否则必然过噪或漏报。
+- **evidence criteria / assessment prompt** — 知识节点上的「怎么算掌握了」与「用什么问题去验」。把教研团队才产出的评测设计模板化成 LLM 可执行指令，是这类数据集商业价值最高的部分。
+- **provenance（数据来源元数据）** — 每条数据的生产方法 / 审核状态 / 审核人 / 置信度。没有 provenance 和公开 QA 流程的知识图谱是红旗：一条错边静默导偏整条学习路径，使用者发现不了。
+- **BKT / DKT / IRT** — 学习者状态建模一系（Bayesian Knowledge Tracing / Deep KT / Item Response Theory），建模掌握度、遗忘与部分掌握。依赖图只建模「顺序」，这层建模「学到什么程度」，需大量真实作答数据标定 —— 也正是开源数据集普遍缺的那一层。
+- **ODbL 1.0 / CC BY-SA 4.0** — 开源数据集常见组合（数据库用 ODbL、内容用 CC BY-SA）。要点：商用**不要求**开源自己的产品代码，只要求把对该数据集本身的改进回馈；copyleft 不传染到应用层。

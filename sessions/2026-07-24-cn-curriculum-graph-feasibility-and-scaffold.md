@@ -10,6 +10,9 @@ Date: 2026-07-24
 
 分析结论引出一个问题：**能不能按同样的方式建一个基于中国国内课标的仓库？**
 
+> 上游那份分析的产品/架构部分（地图 vs 导航的分层、为 LLM 而设计的图谱、
+> DAG 建模的有损性、课标年龄错位）已迁入 `2026-07-24-marble-upstream-analysis.md`。
+
 本次会话完成了三件事：
 1. 对 Marble 全量数据做定量核对，判断"重做的门槛在哪"
 2. 可行性分析（法律 / 教研 / 工程 / 需求四道闸门）
@@ -274,4 +277,5 @@ CI 接真 LLM，测试接确定性假判定器。
 - `memory/decisions.md` —— 「定位为流水线而非数据集」决策条目
 - `memory/pitfalls.md` —— 分组键的坑
 - `memory/learning-log.md` —— 本次学习记录与下一步
+- `sessions/2026-07-24-marble-upstream-analysis.md` —— 上游数据集的产品/架构分析
 - 上游数据：https://github.com/withmarbleapp/os-taxonomy （ODbL 1.0 + CC BY-SA 4.0）
