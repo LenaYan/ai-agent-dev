@@ -52,3 +52,9 @@
 - 收获：①**分清"地图"与"导航"**——这类开源教育数据集只放出知识依赖图（地图），learner model / 调度策略 / 生成评测（GPS + 路由 + 播报）全留在闭源侧。缺的那三层恰好就是 agent 要做的事，所以它是很好的实验"环境"而非成品方案。②真正的创新点是**把教研资产翻译成 LLM 的调用协议**：边带 hard/soft + 人可读理由、节点带 evidence criteria + assessment prompt，为 LLM 消费而设计，与 2015 年那批为规则引擎设计的图谱不是一回事。③**DAG 建模是有损的**：不含遗忘、螺旋上升、部分掌握（BKT/DKT/IRT 那一层需真实作答数据，开源不了）——这条催生了本项目的 revisits 螺旋边。④**课标年龄错位是真实差异**：人教版四年级的四则混合运算/两位数除法/三角形内角和/平均数被标为 10-11 岁（英国 Y6），说明人教版早约一年 → 印证进度基元该用年级而非年龄，且跨课标数据上 GRADE_INVERSION 噪声高是预期行为不是 bug。
 - 产出：sessions/2026-07-24-marble-upstream-analysis.md（原始会话在非 git 目录 ~/Claude/child_watch_baobao，故迁入本仓库）
 - 下一步：同上条——生成流水线；另可选：把 os-taxonomy + 社区 taxonomy-mcp 纳入实验素材，若要做调度实验则需自写 learner model（缺的正是这层）。
+
+## 2026-07-24 — cn-curriculum-graph 接真 LLM judge，激活 NAME_DESC_MISMATCH（TDD）
+- 收获：①**judge = 纯函数 (name, description) -> Verdict，Protocol 钉死契约，LLM 只是一个实现**。project 里第一个"模型在循环里"，也是生成流水线"交叉审核"层的前置（那层本质是多 judge 投票）。②**结构化输出用 messages.parse(output_format=Verdict)**，逼模型直接返回 {consistent, reason}，Verdict 的 extra="forbid" 恰好满足结构化输出要求的 additionalProperties:false；temperature=0 求可复现；分类任务默认 Haiku 4.5（便宜、够用，构造参数可覆盖，评测证明不够再升）。③**client 依赖注入是可测性的关键**：构造时可注入 fake client → 单元测试验"接线"（喂对参数、翻译对返回）而零网络零 key；anthropic 懒加载，测试连 SDK 都不碰。④**有 ground truth 才敢信 LLM 判定**：拿手工核对的 4 个 Marble 名实不符节点当标尺，eval_judge.py 算 accuracy/precision/recall，漏报(FN)非零退出——这套 ground truth 基建将来复用给流水线审核层。
+- 产出：judges/anthropic_judge.py + scripts/eval_judge.py + data/judge-eval-groundtruth.json + CLI `--judge anthropic`/`--model`；44 测试（+6）。全程 TDD（先写失败测试再实现）。anthropic>=0.69 入 deps。
+- 待办：本地拿真 ANTHROPIC_API_KEY 跑 eval_judge.py 量 Haiku 准不准（无 key 时清晰报错退出 2，非 traceback）。
+- 下一步：生成流水线骨架（多 agent 抽取课标→去重→依赖边生成→交叉审核，先用十几个手写种子跑通链路）。法律定性只卡"大规模生成+对外发布"，本地自用不受阻。

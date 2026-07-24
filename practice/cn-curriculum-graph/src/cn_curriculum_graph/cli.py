@@ -7,11 +7,24 @@
 
 import argparse
 import collections
+import os
 from pathlib import Path
 
+from cn_curriculum_graph.judges.anthropic_judge import DEFAULT_MODEL, AnthropicJudge
 from cn_curriculum_graph.models import CurriculumGraph
 from cn_curriculum_graph.runner import has_errors, run_all
 from cn_curriculum_graph.validators.base import Finding, Severity
+from cn_curriculum_graph.validators.consistency import Judge
+
+
+def build_judge(kind: str, model: str) -> Judge | None:
+    """按 --judge 选择判定器。none → 返回 None（runner 会留下 CONSISTENCY_SKIPPED
+    警告，不静默通过）；anthropic → 真 LLM judge，激活 NAME_DESC_MISMATCH。"""
+    if kind == "none":
+        return None
+    if kind == "anthropic":
+        return AnthropicJudge(model=model)
+    raise ValueError(f"未知 judge：{kind}")
 
 
 def load_graph(path: str | Path) -> CurriculumGraph:
@@ -54,9 +67,20 @@ def format_report(findings: list[Finding]) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ccg-validate", description="课标知识依赖图校验")
     parser.add_argument("graph", help="图 JSON 文件路径")
+    parser.add_argument(
+        "--judge",
+        choices=("none", "anthropic"),
+        default="none",
+        help="name/description 语义一致性判定器（anthropic 需 ANTHROPIC_API_KEY）",
+    )
+    parser.add_argument("--model", default=DEFAULT_MODEL, help=f"judge 模型（默认 {DEFAULT_MODEL}）")
     args = parser.parse_args(argv)
 
-    findings = run_all(load_graph(args.graph))
+    if args.judge == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"):
+        parser.error("--judge anthropic 需要 ANTHROPIC_API_KEY（写进 .env 或 export）")
+
+    judge = build_judge(args.judge, model=args.model)
+    findings = run_all(load_graph(args.graph), judge=judge)
     print(format_report(findings))
     return 1 if has_errors(findings) else 0
 

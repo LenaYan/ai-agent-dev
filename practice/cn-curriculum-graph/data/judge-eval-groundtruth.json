@@ -1,0 +1,61 @@
+{
+  "_note": "judge 评测的 ground truth。前 3 条是从 Marble os-taxonomy 手工核对出的真实名实不符节点（描述为其实际内容的忠实重述，非逐字原文）；后 5 条是手写的明显一致案例（含中英、中英混排）。expected_consistent=false 视为『正类=名实不符』，用于算 precision/recall。要跑真实 Marble 数据，把 topics.json 的 name/description 灌进同样结构即可。",
+  "cases": [
+    {
+      "id": "mt_MCu_SNg_OW",
+      "name": "Arrays for multiplication",
+      "description": "Divide a four-digit number by a one-digit number using the short division algorithm.",
+      "expected_consistent": false,
+      "note": "名说乘法阵列，描述在讲短除法"
+    },
+    {
+      "id": "mt_GzcJEVkNRn",
+      "name": "Understanding angles",
+      "description": "Find the area of a rectangle by multiplying its side lengths.",
+      "expected_consistent": false,
+      "note": "名说认识角，描述在求长方形面积"
+    },
+    {
+      "id": "mt_Xt1cRqaBOW",
+      "name": "Understanding angles",
+      "description": "Classify quadrilaterals such as squares, rectangles, and parallelograms by their properties.",
+      "expected_consistent": false,
+      "note": "名说认识角，描述在做四边形分类"
+    },
+    {
+      "id": "good_angles",
+      "name": "Understanding angles",
+      "description": "Recognize that an angle is formed by two rays sharing a common endpoint, and identify acute, right, and obtuse angles.",
+      "expected_consistent": true,
+      "note": "名实相符的『认识角』对照组"
+    },
+    {
+      "id": "good_fractions",
+      "name": "Adding fractions with like denominators",
+      "description": "Add two fractions that share the same denominator by adding the numerators and keeping the denominator.",
+      "expected_consistent": true,
+      "note": "英文一致案例"
+    },
+    {
+      "id": "good_triangle_cn",
+      "name": "三角形内角和",
+      "description": "三角形三个内角的度数之和等于 180 度。",
+      "expected_consistent": true,
+      "note": "纯中文一致案例"
+    },
+    {
+      "id": "good_mean_mixed",
+      "name": "平均数 (mean)",
+      "description": "The mean of a data set is the sum of all the values divided by the number of values.",
+      "expected_consistent": true,
+      "note": "中英混排、跨语言一致案例"
+    },
+    {
+      "id": "good_bar_graph",
+      "name": "Reading bar graphs",
+      "description": "Read and compare the values represented by the bars in a bar graph.",
+      "expected_consistent": true,
+      "note": "英文一致案例"
+    }
+  ]
+}

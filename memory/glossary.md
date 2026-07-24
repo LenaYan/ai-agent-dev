@@ -26,3 +26,5 @@ Agent 领域关键术语，按需追加。每条：术语 · 一句话定义 · 
 - **provenance（数据来源元数据）** — 每条数据的生产方法 / 审核状态 / 审核人 / 置信度。没有 provenance 和公开 QA 流程的知识图谱是红旗：一条错边静默导偏整条学习路径，使用者发现不了。
 - **BKT / DKT / IRT** — 学习者状态建模一系（Bayesian Knowledge Tracing / Deep KT / Item Response Theory），建模掌握度、遗忘与部分掌握。依赖图只建模「顺序」，这层建模「学到什么程度」，需大量真实作答数据标定 —— 也正是开源数据集普遍缺的那一层。
 - **ODbL 1.0 / CC BY-SA 4.0** — 开源数据集常见组合（数据库用 ODbL、内容用 CC BY-SA）。要点：商用**不要求**开源自己的产品代码，只要求把对该数据集本身的改进回馈；copyleft 不传染到应用层。
+- **LLM-as-judge（LLM 判定器）** — 用一个 LLM 调用做有界判断（一致性/相关性/优劣打分），产出结构化结论供流水线消费。工程要点：做成依赖注入的 Protocol（CI 接真 LLM、测试接确定性假判定器）；temperature=0 求可复现；先便宜模型跑 ground truth 量准确率，不够再升级。多 judge 投票 = 交叉审核层的基本形态。
+- **结构化输出 / messages.parse（Anthropic SDK）** — `client.messages.parse(output_format=PydanticModel)` 逼模型直接返回校验过的结构化对象（读 `.parsed_output`），而非自由文本再解析。要求 schema `additionalProperties:false`（pydantic `extra="forbid"` 即满足）。支持 Haiku 4.5+/Opus/Sonnet/Fable。

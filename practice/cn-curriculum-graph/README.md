@@ -18,10 +18,21 @@
 
 ```bash
 uv sync
-uv run pytest                        # 36 个测试
-uv run ccg-validate data/graph.json  # 校验一份图数据
+uv run pytest                        # 44 个测试
+uv run ccg-validate data/graph.json  # 校验一份图数据（默认跳过语义一致性，留 CONSISTENCY_SKIPPED 警告）
 
 uv run python scripts/export_schema.py   # 重新导出 JSON Schema
+```
+
+接真 LLM judge，激活 `NAME_DESC_MISMATCH`（需 `ANTHROPIC_API_KEY`）：
+
+```bash
+export ANTHROPIC_API_KEY=sk-...                          # 或写进工作区根目录 .env
+uv run ccg-validate data/graph.json --judge anthropic    # 默认 Haiku 4.5
+uv run ccg-validate data/graph.json --judge anthropic --model claude-sonnet-5
+
+# 先量 judge 判得准不准，再决定用哪个模型（对 ground truth 跑准确率/查准/查全）：
+uv run python scripts/eval_judge.py
 ```
 
 把校验层跑在 Marble 的真实数据上（验证规则在规模下有效）：
@@ -108,10 +119,15 @@ adapters/marble.py   仅用于把校验层跑在真实数据上，不引入其�
 
 ## 下一步
 
-1. `docs/feasibility-analysis.md` 里的法律问题 —— 课标著作权定性需要专业意见
-2. 生成流水线（多 agent 抽取 + 交叉审核），产出第一批「数与代数」节点
-3. 接真 LLM judge，把 `NAME_DESC_MISMATCH` 跑起来
+1. ✅ ~~接真 LLM judge，把 `NAME_DESC_MISMATCH` 跑起来~~ ——
+   `judges/anthropic_judge.py` + `--judge anthropic` + `scripts/eval_judge.py`（评测 ground truth）
+2. 用真 key 跑 `eval_judge.py`，量 Haiku 4.5 判得准不准；不够再升 Sonnet
+3. 生成流水线（多 agent 抽取 + 交叉审核），产出第一批「数与代数」节点 ——
+   其"交叉审核"层复用这套 judge + ground truth 基建
 4. MCP server，把图暴露给 agent
+
+> 法律定性（课标著作权，`docs/feasibility-analysis.md`）只卡"大规模生成 + 对外发布"；
+> 本地自用的流水线跑通不受影响。
 
 ## 许可与来源
 
