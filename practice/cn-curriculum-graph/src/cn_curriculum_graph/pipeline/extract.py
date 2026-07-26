@@ -136,7 +136,14 @@ def extract_all(
                 continue
             drafts.append(
                 TopicDraft(
-                    draft_id=f"{chunk.id}-{index}",
+                    # index 补零到两位：chunk.id 本身补零到三位
+                    # （f"{stem}#{ordinal:03d}"），若 index 是裸整数，
+                    # 一条条目抽出 ≥10 个知识点时字典序会与抽取序反相关
+                    # （"...-10" < "...-2"）。edges.py 的
+                    # candidate_prerequisites 靠"同年级节点按 draft_id
+                    # 字典序定先后方向"断双向边防 CYCLE，这条规则的前提
+                    # 正是 draft_id 字典序 ≈ 抽取序，补零是维持这个前提的必要条件。
+                    draft_id=f"{chunk.id}-{index:02d}",
                     chunk_id=chunk.id,
                     standard_codes=[chunk.standard_code],
                     content=content,
