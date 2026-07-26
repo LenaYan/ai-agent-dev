@@ -10,20 +10,37 @@ import collections
 import os
 from pathlib import Path
 
-from cn_curriculum_graph.judges.anthropic_judge import DEFAULT_MODEL, AnthropicJudge
+from cn_curriculum_graph.judges.anthropic_judge import DEFAULT_MODEL as ANTHROPIC_MODEL
+from cn_curriculum_graph.judges.anthropic_judge import AnthropicJudge
+from cn_curriculum_graph.judges.deepseek_judge import DEFAULT_MODEL as DEEPSEEK_MODEL
+from cn_curriculum_graph.judges.deepseek_judge import DeepSeekJudge
 from cn_curriculum_graph.models import CurriculumGraph
 from cn_curriculum_graph.runner import has_errors, run_all
 from cn_curriculum_graph.validators.base import Finding, Severity
 from cn_curriculum_graph.validators.consistency import Judge
 
+JUDGE_KINDS = ("none", "anthropic", "deepseek")
+
+# 每个 judge 认自己的 key：DeepSeek 绝不复用 ANTHROPIC_API_KEY，
+# 也不走官方文档教的 ANTHROPIC_BASE_URL —— 那会把同机的 Claude Code 一起劫持。
+_REQUIRED_ENV = {"anthropic": "ANTHROPIC_API_KEY", "deepseek": "DEEPSEEK_API_KEY"}
+_DEFAULT_MODEL = {"anthropic": ANTHROPIC_MODEL, "deepseek": DEEPSEEK_MODEL}
+
+
+def default_model_for(kind: str) -> str:
+    """--model 没给时按 judge 取默认，别把 claude 的 id 发给 DeepSeek。"""
+    return _DEFAULT_MODEL[kind]
+
 
 def build_judge(kind: str, model: str) -> Judge | None:
     """按 --judge 选择判定器。none → 返回 None（runner 会留下 CONSISTENCY_SKIPPED
-    警告，不静默通过）；anthropic → 真 LLM judge，激活 NAME_DESC_MISMATCH。"""
+    警告，不静默通过）；其余 → 真 LLM judge，激活 NAME_DESC_MISMATCH。"""
     if kind == "none":
         return None
     if kind == "anthropic":
         return AnthropicJudge(model=model)
+    if kind == "deepseek":
+        return DeepSeekJudge(model=model)
     raise ValueError(f"未知 judge：{kind}")
 
 
@@ -69,17 +86,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("graph", help="图 JSON 文件路径")
     parser.add_argument(
         "--judge",
-        choices=("none", "anthropic"),
+        choices=JUDGE_KINDS,
         default="none",
-        help="name/description 语义一致性判定器（anthropic 需 ANTHROPIC_API_KEY）",
+        help="name/description 语义一致性判定器（各自需要对应的 API key）",
     )
-    parser.add_argument("--model", default=DEFAULT_MODEL, help=f"judge 模型（默认 {DEFAULT_MODEL}）")
+    parser.add_argument(
+        "--model",
+        default=None,
+        help=f"judge 模型（不给则按 judge 取默认：anthropic={ANTHROPIC_MODEL}，deepseek={DEEPSEEK_MODEL}）",
+    )
     args = parser.parse_args(argv)
 
-    if args.judge == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"):
-        parser.error("--judge anthropic 需要 ANTHROPIC_API_KEY（写进 .env 或 export）")
+    env_var = _REQUIRED_ENV.get(args.judge)
+    if env_var and not os.environ.get(env_var):
+        parser.error(f"--judge {args.judge} 需要 {env_var}（export 或写进 .env）")
 
-    judge = build_judge(args.judge, model=args.model)
+    model = args.model or (default_model_for(args.judge) if args.judge != "none" else "")
+    judge = build_judge(args.judge, model=model)
     findings = run_all(load_graph(args.graph), judge=judge)
     print(format_report(findings))
     return 1 if has_errors(findings) else 0

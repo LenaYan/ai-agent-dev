@@ -28,3 +28,6 @@ Agent 领域关键术语，按需追加。每条：术语 · 一句话定义 · 
 - **ODbL 1.0 / CC BY-SA 4.0** — 开源数据集常见组合（数据库用 ODbL、内容用 CC BY-SA）。要点：商用**不要求**开源自己的产品代码，只要求把对该数据集本身的改进回馈；copyleft 不传染到应用层。
 - **LLM-as-judge（LLM 判定器）** — 用一个 LLM 调用做有界判断（一致性/相关性/优劣打分），产出结构化结论供流水线消费。工程要点：做成依赖注入的 Protocol（CI 接真 LLM、测试接确定性假判定器）；temperature=0 求可复现；先便宜模型跑 ground truth 量准确率，不够再升级。多 judge 投票 = 交叉审核层的基本形态。
 - **结构化输出 / messages.parse（Anthropic SDK）** — `client.messages.parse(output_format=PydanticModel)` 逼模型直接返回校验过的结构化对象（读 `.parsed_output`），而非自由文本再解析。要求 schema `additionalProperties:false`（pydantic `extra="forbid"` 即满足）。支持 Haiku 4.5+/Opus/Sonnet/Fable。
+- **强制工具调用取结构化输出（forced tool call）** — 跨 provider 通用的结构化输出做法：把目标 pydantic 模型的 JSON Schema 当成一个工具的 `input_schema`，用 `tool_choice={"type":"tool","name":...}` 强制模型调用它，再从 `tool_use` block 取参数并 `model_validate`。相比各家原生结构化输出（Anthropic `output_format`、OpenAI `json_schema`）**可移植性强得多** —— 兼容端点常常照收原生参数却不遵守。代价：强制只保证"调了工具"，不保证参数合法，仍要自己校验。
+- **OpenAI/Anthropic 兼容端点（compat endpoint）** — 第三方模型服务模仿主流 API 格式，让你换个 `base_url` 就复用官方 SDK（如 DeepSeek 的 `https://api.deepseek.com/anthropic`）。坑：**兼容是部分兼容**，新特性（结构化输出、思考模式与 tool_choice 的组合）常静默降级而非报错，必须实测每个用到的参数；且**别用它教的 `ANTHROPIC_BASE_URL` 环境变量**，同机的 Claude Code 等工具也读它，会被一起劫持。
+- **judge 多样性（模型多样性 vs 提示词多样性）** — 多 judge 投票只有在投票者**独立**时才有意义。同族模型的误判高度相关，投两次约等于投一次；要多样性就换训练谱系（如 Anthropic + DeepSeek），且**共用同一份提示词** —— 否则分歧分不清是"模型看法不同"还是"问题问得不一样"。

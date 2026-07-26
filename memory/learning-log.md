@@ -53,6 +53,12 @@
 - 产出：sessions/2026-07-24-marble-upstream-analysis.md（原始会话在非 git 目录 ~/Claude/child_watch_baobao，故迁入本仓库）
 - 下一步：同上条——生成流水线；另可选：把 os-taxonomy + 社区 taxonomy-mcp 纳入实验素材，若要做调度实验则需自写 learner model（缺的正是这层）。
 
+## 2026-07-26 — 多 provider judge：DeepSeek 接入 + 真实数据实测（TDD）
+- 收获：①**结构化输出不是可移植特性，"强制工具调用"才是**。DeepSeek 的 Anthropic 兼容端点（`https://api.deepseek.com/anthropic`）能用同一个 anthropic SDK，但**照收 `output_format` 却不遵守**（实测返回自由文本"否"，SDK 在 JSON 解析上炸）；改成「强制调用一个 `input_schema` 就是 Verdict 的工具」即通 —— 任何支持 tool use 的模型都能跑，代价是自己 `model_validate` 一遍。另：DeepSeek v4 默认开 thinking，而**思考模式不接受强制 tool_choice**（400），需显式 `thinking={"type":"disabled"}`；分类任务本也不需要思考预算。②**judge 多样性必须来自模型，不能来自提示词**：两个 judge 共用同一份系统提示（`judges/prompt.py`），否则分歧分不清是"模型看法不同"还是"问题问得不一样"，投票机制失去意义。而 Anthropic/DeepSeek 是不同训练谱系，误判模式不重叠，正好当交叉审核的独立投票者（同族模型误判高度相关，投两次约等于投一次）。③**干净样本会掩盖定义歧义**：8 条手写 ground truth 上 deepseek-v4-flash 拿了 100%，但抽 Marble 真实节点 124 个跑出 11 条(≈9%)，其中 6 条是「名称与描述**覆盖范围**不一致」而非「讲的是不同知识点」—— ground truth 测不出的语义缺口，真实数据一跑就现形。④**环境变量会互相踩**：DeepSeek 官方教 `export ANTHROPIC_BASE_URL=...`，但同机 Claude Code 也读这个变量，export 出去会把 Claude Code 整个劫持走 —— base_url 一律代码里显式传，key 用独立 `DEEPSEEK_API_KEY`。
+- 成本/性能实测：deepseek-v4-flash 单次约 1.4s；8 并发跑 124 节点 22s、0 失败。全量 1590 节点约 $0.08（对比 Haiku 约 $0.6）。订阅走 `claude -p` 也能当 judge 且判得对，但单次 26s、烧 26k token（有效输入只有 10）—— agent runtime 的固定开销，批处理场景不成立。
+- 产出：`judges/deepseek_judge.py` + `judges/prompt.py`（抽出共用提示）+ CLI `--judge {none,anthropic,deepseek}`（每个 judge 认自己的 key，缺 key 清晰报错退出 2）+ `eval_judge.py --judge`；55 测试（+11）。全程 TDD。
+- 下一步：**先定死"范围不匹配算不算名实不符"这条产品语义**（本项目第一个非工程决策），把那 6 个边界案例补进 ground truth 并据此调 prompt；然后才是生成流水线骨架。
+
 ## 2026-07-24 — cn-curriculum-graph 接真 LLM judge，激活 NAME_DESC_MISMATCH（TDD）
 - 收获：①**judge = 纯函数 (name, description) -> Verdict，Protocol 钉死契约，LLM 只是一个实现**。project 里第一个"模型在循环里"，也是生成流水线"交叉审核"层的前置（那层本质是多 judge 投票）。②**结构化输出用 messages.parse(output_format=Verdict)**，逼模型直接返回 {consistent, reason}，Verdict 的 extra="forbid" 恰好满足结构化输出要求的 additionalProperties:false；temperature=0 求可复现；分类任务默认 Haiku 4.5（便宜、够用，构造参数可覆盖，评测证明不够再升）。③**client 依赖注入是可测性的关键**：构造时可注入 fake client → 单元测试验"接线"（喂对参数、翻译对返回）而零网络零 key；anthropic 懒加载，测试连 SDK 都不碰。④**有 ground truth 才敢信 LLM 判定**：拿手工核对的 4 个 Marble 名实不符节点当标尺，eval_judge.py 算 accuracy/precision/recall，漏报(FN)非零退出——这套 ground truth 基建将来复用给流水线审核层。
 - 产出：judges/anthropic_judge.py + scripts/eval_judge.py + data/judge-eval-groundtruth.json + CLI `--judge anthropic`/`--model`；44 测试（+6）。全程 TDD（先写失败测试再实现）。anthropic>=0.69 入 deps。

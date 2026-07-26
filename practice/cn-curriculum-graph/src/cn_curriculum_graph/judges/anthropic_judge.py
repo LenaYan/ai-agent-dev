@@ -17,21 +17,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from cn_curriculum_graph.judges.prompt import JUDGE_SYSTEM, build_user_message
 from cn_curriculum_graph.validators.consistency import Verdict
 
 # 名实一致判断是简单有界任务，1590 次调用也便宜；先便宜、量出来、再升级。
 DEFAULT_MODEL = "claude-haiku-4-5"
-
-_SYSTEM = (
-    "你是小学课标知识依赖图的数据质检员。"
-    "会给你一个知识点的『名称』和『描述』，判断二者讲的是不是同一件事。\n"
-    "判 consistent=false 的情形：名称说的概念与描述实际教的内容属于不同知识点"
-    "（例如名称写『乘法阵列』而描述在讲短除法，或名称写『认识角』而描述在求面积）。\n"
-    "判 consistent=true 的情形：名称是描述内容的合理概括，即便措辞、语言不同"
-    "（中英文、宽泛与具体）也算一致。\n"
-    "只做名称与描述的一致性判断，不评价描述本身对不对、不看其他字段。\n"
-    "reason 用一句中文说明依据。"
-)
 
 
 class AnthropicJudge:
@@ -50,13 +40,8 @@ class AnthropicJudge:
             model=self._model,
             max_tokens=512,
             temperature=0,
-            system=_SYSTEM,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"名称：{name}\n\n描述：{description}",
-                }
-            ],
+            system=JUDGE_SYSTEM,
+            messages=[{"role": "user", "content": build_user_message(name, description)}],
             output_format=Verdict,
         )
         return response.parsed_output
