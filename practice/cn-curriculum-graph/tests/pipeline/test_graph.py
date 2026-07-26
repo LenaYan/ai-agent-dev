@@ -21,6 +21,7 @@ from cn_curriculum_graph.pipeline import review as review_mod
 from cn_curriculum_graph.pipeline.faults import wrap_deps
 from cn_curriculum_graph.pipeline.graph import PipelineState, build_graph, retry_on, run_pipeline_lg
 from cn_curriculum_graph.pipeline.models import ProposedEdge, ProposedEdgeBatch
+from cn_curriculum_graph.runner import has_errors
 from .test_run import SOURCE, _fake_deps
 
 
@@ -426,3 +427,80 @@ def test_assemble_retry_via_checkpoint_does_not_duplicate_drops(tmp_path, monkey
     drops = json.loads((tmp_path / "out" / "dropped.json").read_text(encoding="utf-8"))
     dup_drops = [d for d in drops if d["reason"] == "DUPLICATE_EDGE"]
     assert len(dup_drops) == 1, f"dropped.json 里 DUPLICATE_EDGE 不应重复，实际：{dup_drops}"
+
+
+def test_rerunning_a_completed_thread_does_not_accumulate_state(tmp_path):
+    """全分支审查 Critical 1：同一 (checkpoint_db, thread_id) 在**上一次成功
+    跑完之后**再调一次——这是 `run.py::derive_thread_id` 刻意设计出的生产
+    CLI 默认路径（同一实验、同一 --source/--out 重跑会派生出同一个
+    thread_id）。
+
+    `existing.next == ()` 时此前直接 `ainvoke(payload, ...)`：LangGraph 在
+    同一 thread 上开新 run 不会重置 channel，而 `drafts`/`drops` 都是
+    `Annotated[..., operator.add]`——第二次的 delta 会叠加在第一次已完成的
+    值上面。SOURCE 有两个条目，`_fake_deps()` 每个条目各产出一条 draft，
+    一次干净的跑法应当是 2 条 draft、2 个 topic；复现的坏行为是重跑后
+    02-drafts.json 变成 4 条、dedupe 因为看到两组相同内容而互相抵消。
+    """
+    source = tmp_path / "source" / "math.md"
+    source.parent.mkdir(parents=True)
+    source.write_text(SOURCE, encoding="utf-8")
+    out = tmp_path / "out"
+    db = tmp_path / "cp.sqlite"
+
+    run_pipeline_lg(
+        source.parent, out, _fake_deps(), model_id="fake",
+        curriculum="c", checkpoint_db=db, thread_id="same-thread",
+    )
+    first_drafts = json.loads((out / "02-drafts.json").read_text(encoding="utf-8"))
+    assert len(first_drafts) == 2
+
+    # 同一 thread_id、同一 checkpoint db、完全相同的调用参数——生产 CLI
+    # 重跑同一实验的默认路径。
+    findings = run_pipeline_lg(
+        source.parent, out, _fake_deps(), model_id="fake",
+        curriculum="c", checkpoint_db=db, thread_id="same-thread",
+    )
+
+    second_drafts = json.loads((out / "02-drafts.json").read_text(encoding="utf-8"))
+    assert len(second_drafts) == 2, (
+        f"跑完之后再跑，02-drafts.json 不应比第一次多——实际：{len(second_drafts)} 条，"
+        "State 在同一 thread 上被 reducer 累加了"
+    )
+    graph = json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    assert len(graph["topics"]) == 2, (
+        f"跑完之后再跑，graph.json 的 topics 不应归零或异常——实际：{len(graph['topics'])} 个"
+    )
+    assert not has_errors(findings)
+
+
+def test_rerunning_a_completed_thread_with_different_args_raises(tmp_path):
+    """残余洞：thread 已跑完（`existing.next == ()`）时，`_ensure_consistent_
+    resume` 此前完全不会被调用——同一 `--thread-id` 配完全不同的 `--out`，
+    第二次跑不会被拦截，只会在"跑完之后再跑"的状态累加坑里安静地产出一份
+    混杂两次实验数据的 graph.json。这里钉死：thread 已完成时换一套
+    source/out 用同一 thread_id 续跑，必须 raise，而不是静默接受。
+    """
+    source_a = tmp_path / "srcA"
+    source_a.mkdir()
+    (source_a / "m.md").write_text(SOURCE, encoding="utf-8")
+    out_a = tmp_path / "outA"
+    db = tmp_path / "cp.sqlite"
+
+    run_pipeline_lg(
+        source_a, out_a, _fake_deps(), model_id="fake",
+        curriculum="c", checkpoint_db=db, thread_id="shared-done",
+    )
+
+    source_b = tmp_path / "srcB"
+    source_b.mkdir()
+    (source_b / "m.md").write_text(SOURCE, encoding="utf-8")
+    out_b = tmp_path / "outB"
+
+    with pytest.raises(ValueError, match="source_dir"):
+        run_pipeline_lg(
+            source_b, out_b, _fake_deps(), model_id="fake",
+            curriculum="c", checkpoint_db=db, thread_id="shared-done",
+        )
+
+    assert not (out_b / "graph.json").exists()

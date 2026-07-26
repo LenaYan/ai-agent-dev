@@ -151,3 +151,69 @@ def test_drops_from_a_failed_chunk_extraction_survive_on_disk(tmp_path):
 
     drops = json.loads((out / "dropped.json").read_text(encoding="utf-8"))
     assert any(d["reason"] == "NO_DRAFTS" for d in drops)
+
+
+def test_rerunning_a_completed_thread_does_not_accumulate_state(tmp_path):
+    """全分支审查 Critical 1，fanout 版：`run_pipeline_fanout` 与
+    `run_pipeline_lg` 共用同一段 resume 逻辑（`_ensure_consistent_resume` +
+    `existing.next` 判断），且这里累加字段更多——`drafts`/`drops` 之外还有
+    B 阶段专属的 `draft_review_kept`/`draft_review_outcomes`。跑完之后用
+    同一 (checkpoint_db, thread_id) 再跑一次，产物必须与"只跑一次"一致，
+    不能被上一轮已完成的 state 叠加污染。
+    """
+    source = tmp_path / "source" / "math.md"
+    source.parent.mkdir(parents=True)
+    source.write_text(SOURCE, encoding="utf-8")
+    out = tmp_path / "out"
+    db = tmp_path / "cp.sqlite"
+
+    run_pipeline_fanout(
+        source.parent, out, _fake_deps(), model_id="fake",
+        curriculum="c", checkpoint_db=db, thread_id="same-thread",
+    )
+    first_drafts = json.loads((out / "02-drafts.json").read_text(encoding="utf-8"))
+    assert len(first_drafts) == 2
+
+    findings = run_pipeline_fanout(
+        source.parent, out, _fake_deps(), model_id="fake",
+        curriculum="c", checkpoint_db=db, thread_id="same-thread",
+    )
+
+    second_drafts = json.loads((out / "02-drafts.json").read_text(encoding="utf-8"))
+    assert len(second_drafts) == 2, (
+        f"跑完之后再跑，02-drafts.json 不应比第一次多——实际：{len(second_drafts)} 条"
+    )
+    graph = json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    assert len(graph["topics"]) == 2, (
+        f"跑完之后再跑，graph.json 的 topics 不应异常——实际：{len(graph['topics'])} 个"
+    )
+    assert not has_errors(findings)
+
+
+def test_rerunning_a_completed_thread_with_different_args_raises(tmp_path):
+    """fanout 版残余洞：thread 已跑完时换一套 source/out、复用同一
+    thread_id，必须 raise，而不是静默接受、产出一份混杂两次实验数据的
+    graph.json。"""
+    source_a = tmp_path / "srcA"
+    source_a.mkdir()
+    (source_a / "m.md").write_text(SOURCE, encoding="utf-8")
+    out_a = tmp_path / "outA"
+    db = tmp_path / "cp.sqlite"
+
+    run_pipeline_fanout(
+        source_a, out_a, _fake_deps(), model_id="fake",
+        curriculum="c", checkpoint_db=db, thread_id="shared-done",
+    )
+
+    source_b = tmp_path / "srcB"
+    source_b.mkdir()
+    (source_b / "m.md").write_text(SOURCE, encoding="utf-8")
+    out_b = tmp_path / "outB"
+
+    with pytest.raises(ValueError, match="source_dir"):
+        run_pipeline_fanout(
+            source_b, out_b, _fake_deps(), model_id="fake",
+            curriculum="c", checkpoint_db=db, thread_id="shared-done",
+        )
+
+    assert not (out_b / "graph.json").exists()

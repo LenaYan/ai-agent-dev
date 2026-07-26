@@ -297,10 +297,19 @@ def run_pipeline_fanout(
         async with AsyncSqliteSaver.from_conn_string(str(checkpoint_db)) as saver:
             app = build_fanout_graph().compile(checkpointer=saver)
             existing = await app.aget_state(config)
-            resume = existing.next != ()
-            if resume:
+            if existing.next != ():
                 _ensure_consistent_resume(existing.values, payload, thread_id=thread_id)
                 return await app.ainvoke(None, config=config, context=deps)
+            if existing.values:
+                # 同 `run_pipeline_lg` 的 Critical 1 修复：thread 已跑完
+                # （`next == ()` 且 `values` 非空）时，直接 `ainvoke(payload)`
+                # 会让 `drafts`/`drops`/`draft_review_kept`/
+                # `draft_review_outcomes` 这几个带 reducer 的字段把新一轮的
+                # delta 叠加在上一轮已完成的值上——B 阶段累加字段比 A 阶段
+                # 更多，同一根因，参见 graph.py 里的详细论证与
+                # task-8-report.md。
+                _ensure_consistent_resume(existing.values, payload, thread_id=thread_id)
+                await saver.adelete_thread(thread_id)
             return await app.ainvoke(payload, config=config, context=deps)
 
     result = asyncio.run(_ainvoke())

@@ -540,10 +540,40 @@ def run_pipeline_lg(
             # 续跑：同一 thread_id 已有 checkpoint 时传 None，
             # LangGraph 会从上次中断处继续，而不是从头再来
             existing = await app.aget_state(config)
-            resume = existing.next != ()
-            if resume:
+            if existing.next != ():
                 _ensure_consistent_resume(existing.values, payload, thread_id=thread_id)
                 return await app.ainvoke(None, config=config, context=deps)
+            if existing.values:
+                # **Critical 1 修复**：`existing.next == ()` 且 `existing.values`
+                # 非空，说明这个 thread 之前已经跑到底了——这正是
+                # `run.py::derive_thread_id` 刻意设计出的生产 CLI 默认路径
+                # （同一实验、同一 --source/--out 重跑派生出同一个
+                # thread_id）。此前这条分支直接 `ainvoke(payload, ...)`：
+                # LangGraph 在同一 thread 上开新 run **不会重置 channel**，
+                # 而 `drafts`/`drops` 都带 `operator.add` reducer——第二次的
+                # delta 会叠加在第一次已完成的值上，dedupe 因此看到两倍同名
+                # 草稿、互相当成重名抵消，产出一份 topics 归零的 graph.json
+                # （实测复现见 test_rerunning_a_completed_thread_does_not_
+                # accumulate_state，RED 时 topics=0）。
+                #
+                # 修法（选 (a)+(c) 的组合，理由见 task-8-report.md）：
+                # 1. 复用 `_ensure_consistent_resume` 校验本次参数与 checkpoint
+                #    里存的是否一致——这同时补上一个残余洞：此前该函数只在
+                #    `existing.next != ()`（未跑完）分支被调用，同一
+                #    `--thread-id` 配完全不同的 `--out`、且上一次已经跑完，
+                #    是不会被拦截的（实测复现见
+                #    test_rerunning_a_completed_thread_with_different_args_
+                #    raises，RED 时 DID NOT RAISE）。
+                # 2. 校验通过（确实是同一实验的重跑）后，显式
+                #    `saver.adelete_thread(thread_id)` 清空这个 thread 的全部
+                #    checkpoint，再 `ainvoke(payload, ...)`——channel 回到
+                #    "从未跑过"的状态，reducer 不会看到上一轮的旧值。
+                #    没有选纯粹的"跑完就 raise，逼用户换 thread_id"（选项
+                #    a）：那会让"改了源文件、用同一个 --checkpoint 重新生成"
+                #    这个 derive_thread_id 自己承诺过的默认路径也一并报错，
+                #    对生产 CLI 是不必要的倒退。
+                _ensure_consistent_resume(existing.values, payload, thread_id=thread_id)
+                await saver.adelete_thread(thread_id)
             return await app.ainvoke(payload, config=config, context=deps)
 
     result = asyncio.run(_ainvoke())
