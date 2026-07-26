@@ -10,6 +10,8 @@ requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.9",
     "anthropic>=0.69",
+    "langgraph>=1.2.9",
+    "langgraph-checkpoint-sqlite>=3.1.0",
 ]
 
 [project.scripts]
