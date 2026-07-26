@@ -17,12 +17,32 @@ from typing import Any
 
 @dataclass
 class FaultSpec:
-    """在第 fail_on_call 次调用 target 时开始抛 exc，连抛 times 次。"""
+    """在第 fail_on_call 次调用 target 时开始抛 exc，连抛 times 次。
+
+    列表型字段（fidelity_judges / name_judges / edge_judges）的计数语义：
+    计数器按 target 名字**共享**，不是列表里每个元素各计各的。也就是说
+    fail_on_call=2 命中的是「列表里所有元素合计调用次数达到第 2 次」的
+    那次调用——如果列表里有两个 judge，且各自被调用一次，命中的是第二个
+    judge 的第一次调用，而不是某个特定 judge 自己的第二次调用。当前装置
+    做不到「精确指定列表里第几个判定器失败」这种粒度。
+    """
 
     target: str
     fail_on_call: int
     exc: type[Exception]
     times: int = 1
+
+    def __post_init__(self) -> None:
+        if self.fail_on_call < 1:
+            raise ValueError(
+                f"fail_on_call 必须 >= 1，收到 {self.fail_on_call!r}"
+                "（否则故障永远不会触发，实验会静默地什么都没注入）"
+            )
+        if self.times < 1:
+            raise ValueError(
+                f"times 必须 >= 1，收到 {self.times!r}"
+                "（否则故障永远不会触发，实验会静默地什么都没注入）"
+            )
 
 
 @dataclass
