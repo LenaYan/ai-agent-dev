@@ -237,14 +237,59 @@ async def _review_collect(state: FanoutState, runtime) -> dict:
     }
 
 
-def build_fanout_graph() -> StateGraph:
+DEFAULT_MAX_CONCURRENT_LLM_CALLS = 8
+"""`extract_one`/`review_one` 两处扇出点，同一时刻允许同时在飞的 LLM 调用数
+上限。
+
+**Important 1（全分支审查）：并发无上界的真实代价**——`fan_out_chunks`/
+`fan_out_review` 派发的 `Send` 任务数天然等于扇出源的条目数（chunk 数 /
+draft 数），此前完全没有上界。审查者实测：8 个 chunk、extractor 各
+`sleep(1s)`，LangGraph A 阶段（Node 粒度，无扇出）墙钟 8.08s、并发峰值 1；
+fanout 版墙钟 1.05s、并发峰值 8——`Send` 扇出让条目级抽取真并发执行，这是
+框架相对手写版最值钱的一处收益。但收益的B面是：真实课标几十/几百个条目
+会瞬间打出几十路并发 LLM 请求，直接撞 provider 的速率限制。extract_all/
+review_drafts/review_edges 一致采用"逐条 try/except：非编程错误一律转成
+DropRecord，不冒泡"的策略（见 graph.py 的 I1），这意味着并发失控的后果
+*不是崩溃*——是安静地把大半 draft/review 结果吞成 DropRecord 丢掉；
+`RetryPolicy` 按 I1 的结论根本够不着这类故障（它只在整层调用彻底失败时
+触发）。
+
+**默认值 8 的理由（工程判断，非厂商 SLA 承诺——未做任何 provider 端实测
+校准）**：选一个不依赖任何具体 provider 文档、留出安全边际的保守起点，
+优先级是"先有上界"而不是"榨干吞吐"。生产接入前应参照实际 provider
+（本项目目前是 DeepSeek）的并发/QPS 配额重新核实这个数字，这里不代表 8
+对所有场景都是最优值——只保证不再是"无上界"。
+
+extract_one 与 review_one 共用同一个信号量：二者在流水线里时间上不重叠
+（review 扇出发生在 extract 全部收敛、经过 dedupe/edges 之后），共用不会
+造成两处叠加抢占额度。
+"""
+
+
+def build_fanout_graph(
+    max_concurrency: int = DEFAULT_MAX_CONCURRENT_LLM_CALLS,
+) -> StateGraph:
+    semaphore = asyncio.Semaphore(max_concurrency)
+
+    async def _bounded_extract_one(payload: _ExtractOne, runtime) -> dict:
+        async with semaphore:
+            return await node_extract_one(payload, runtime)
+
+    async def _bounded_review_one(payload: _ReviewOne, runtime) -> dict:
+        async with semaphore:
+            return await _review_one(payload, runtime)
+
     g = StateGraph(FanoutState, context_schema=PipelineDeps)
     g.add_node("chunk", node_chunk)
-    g.add_node("extract_one", node_extract_one, retry_policy=RETRY_POLICY, timeout=NODE_TIMEOUT)
+    g.add_node(
+        "extract_one", _bounded_extract_one, retry_policy=RETRY_POLICY, timeout=NODE_TIMEOUT
+    )
     g.add_node("collect_extract", _collect_extract)
     g.add_node("dedupe", node_dedupe, retry_policy=RETRY_POLICY, timeout=NODE_TIMEOUT)
     g.add_node("edges", node_edges, retry_policy=RETRY_POLICY, timeout=NODE_TIMEOUT)
-    g.add_node("review_one", _review_one, retry_policy=RETRY_POLICY, timeout=NODE_TIMEOUT)
+    g.add_node(
+        "review_one", _bounded_review_one, retry_policy=RETRY_POLICY, timeout=NODE_TIMEOUT
+    )
     g.add_node("review", _review_collect, retry_policy=RETRY_POLICY, timeout=NODE_TIMEOUT)
     g.add_node("assemble", node_assemble)
 
@@ -268,6 +313,7 @@ def run_pipeline_fanout(
     curriculum: str = DEFAULT_CURRICULUM,
     checkpoint_db: Path | None = None,
     thread_id: str = "default",
+    max_concurrency: int = DEFAULT_MAX_CONCURRENT_LLM_CALLS,
 ) -> list[Finding]:
     """与 `run_pipeline_lg` 同签名、同一致性校验，唯一区别是编译
     `build_fanout_graph()` 而不是 `build_graph()`——checkpoint 粒度因此从
@@ -277,6 +323,9 @@ def run_pipeline_fanout(
     不重新实现一遍），关于"为什么用 asyncio.run 包一层 ainvoke"、
     "为什么 checkpointer 必须是 AsyncSqliteSaver"这些取舍与
     `run_pipeline_lg` 完全相同，见该函数文档，这里不重复贴一遍论证。
+
+    `max_concurrency`：见 `DEFAULT_MAX_CONCURRENT_LLM_CALLS` 的文档——
+    `extract_one`/`review_one` 两处扇出点同时在飞的 LLM 调用数上限。
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     if checkpoint_db is not None:
@@ -292,10 +341,10 @@ def run_pipeline_fanout(
 
     async def _ainvoke() -> dict:
         if checkpoint_db is None:
-            app = build_fanout_graph().compile()
+            app = build_fanout_graph(max_concurrency=max_concurrency).compile()
             return await app.ainvoke(payload, config=config, context=deps)
         async with AsyncSqliteSaver.from_conn_string(str(checkpoint_db)) as saver:
-            app = build_fanout_graph().compile(checkpointer=saver)
+            app = build_fanout_graph(max_concurrency=max_concurrency).compile(checkpointer=saver)
             existing = await app.aget_state(config)
             if existing.next != ():
                 _ensure_consistent_resume(existing.values, payload, thread_id=thread_id)

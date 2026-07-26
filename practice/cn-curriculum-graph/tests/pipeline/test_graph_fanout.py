@@ -11,6 +11,8 @@ B 阶段的架构已经偏离"与手写版对等"这条硬标准，硬凑对等�
 from __future__ import annotations
 
 import json
+import threading
+import time
 
 import pytest
 from langgraph.types import RetryPolicy
@@ -19,9 +21,10 @@ from cn_curriculum_graph.pipeline import extract as extract_mod
 from cn_curriculum_graph.pipeline import graph_fanout as graph_fanout_mod
 from cn_curriculum_graph.pipeline.graph import retry_on
 from cn_curriculum_graph.pipeline.graph_fanout import build_fanout_graph, run_pipeline_fanout
+from cn_curriculum_graph.pipeline.models import DraftBatch, Vote
 from cn_curriculum_graph.runner import has_errors
 
-from .test_run import SOURCE, _fake_deps
+from .test_run import SOURCE, _content, _fake_deps
 
 
 def test_fanout_graph_has_a_per_chunk_extract_node():
@@ -217,3 +220,77 @@ def test_rerunning_a_completed_thread_with_different_args_raises(tmp_path):
         )
 
     assert not (out_b / "graph.json").exists()
+
+
+def _make_source_with_n_items(tmp_path, n: int):
+    source = tmp_path / "source" / "math.md"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "\n\n".join(f"3.1.{i} 条目{i}。" for i in range(1, n + 1)), encoding="utf-8"
+    )
+    return source.parent
+
+
+def test_fanout_bounds_concurrent_extract_calls(tmp_path):
+    """Important 1：`fan_out_chunks` 的并发度此前等于 chunk 数，没有任何
+    上界——真实课标几十/几百个条目就是几十路并发 LLM 请求，直接撞 provider
+    的速率限制。六层函数的逐条 try/except 会把每次 429 都吞成 DropRecord
+    （不会崩，只会安静地把大半 draft 丢掉），`RetryPolicy` 也够不着（见
+    graph.py 的 I1 论证）。
+
+    用一个记录"同时在飞线程数"的 fake extractor + 6 个 chunk，断言
+    `max_concurrency=2` 时峰值并发不超过 2。"""
+    source = _make_source_with_n_items(tmp_path, 6)
+    out = tmp_path / "out"
+
+    lock = threading.Lock()
+    state = {"current": 0, "peak": 0}
+
+    def extractor(chunk):
+        with lock:
+            state["current"] += 1
+            state["peak"] = max(state["peak"], state["current"])
+        time.sleep(0.05)
+        with lock:
+            state["current"] -= 1
+        return DraftBatch(drafts=[_content(f"知识点{chunk.standard_code}", 1, chunk.text)])
+
+    deps = _fake_deps()
+    deps.extractor = extractor
+
+    findings = run_pipeline_fanout(
+        source, out, deps, model_id="fake", curriculum="c", max_concurrency=2,
+    )
+
+    assert not has_errors(findings)
+    assert state["peak"] <= 2, f"并发峰值应被 max_concurrency=2 限制住，实际峰值：{state['peak']}"
+
+
+def test_fanout_bounds_concurrent_review_calls(tmp_path):
+    """同一个并发上限也要管住 `review_one`——它同样是 Send 扇出、同样对外
+    发起真实 LLM 调用（fidelity_judges/name_judges），风险与 extract_one
+    完全对称。"""
+    source = _make_source_with_n_items(tmp_path, 6)
+    out = tmp_path / "out"
+
+    lock = threading.Lock()
+    state = {"current": 0, "peak": 0}
+
+    def fidelity_judge(draft):
+        with lock:
+            state["current"] += 1
+            state["peak"] = max(state["peak"], state["current"])
+        time.sleep(0.05)
+        with lock:
+            state["current"] -= 1
+        return Vote(reviewer="fake", approved=True, reason="ok")
+
+    deps = _fake_deps()
+    deps.fidelity_judges = [fidelity_judge]
+
+    findings = run_pipeline_fanout(
+        source, out, deps, model_id="fake", curriculum="c", max_concurrency=2,
+    )
+
+    assert not has_errors(findings)
+    assert state["peak"] <= 2, f"并发峰值应被 max_concurrency=2 限制住，实际峰值：{state['peak']}"
