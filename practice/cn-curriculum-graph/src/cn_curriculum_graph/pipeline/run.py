@@ -195,19 +195,37 @@ def main(argv: list[str] | None = None) -> int:
         default="deepseek-v4-flash,deepseek-v4-pro",
         help="审核投票者，逗号分隔；第一个同时用于抽取与连边",
     )
+    parser.add_argument(
+        "--engine",
+        choices=("handwritten", "langgraph"),
+        default="handwritten",
+        help="编排实现。两者行为对等，langgraph 版额外支持 --checkpoint 断点续跑",
+    )
+    parser.add_argument(
+        "--checkpoint", type=Path, default=None, help="checkpoint 数据库路径（仅 langgraph）"
+    )
     args = parser.parse_args(argv)
 
     if not os.environ.get("DEEPSEEK_API_KEY"):
         parser.error("需要 DEEPSEEK_API_KEY（export 或写进 .env）")
 
     models = [m.strip() for m in args.models.split(",") if m.strip()]
-    findings = run_pipeline(
-        source_dir=args.source,
-        out_dir=args.out,
-        deps=build_deepseek_deps(models),
-        model_id=models[0],
-        curriculum=args.curriculum,
-    )
+
+    if args.engine == "langgraph":
+        from cn_curriculum_graph.pipeline.graph import run_pipeline_lg
+
+        findings = run_pipeline_lg(
+            args.source, args.out, build_deepseek_deps(models),
+            model_id=models[0], curriculum=args.curriculum,
+            checkpoint_db=args.checkpoint,
+        )
+    else:
+        if args.checkpoint is not None:
+            parser.error("--checkpoint 仅 --engine langgraph 支持（手写版没有重入能力，这正是对比要量的东西）")
+        findings = run_pipeline(
+            args.source, args.out, build_deepseek_deps(models),
+            model_id=models[0], curriculum=args.curriculum,
+        )
 
     print(format_report(findings))
     return 1 if has_errors(findings) else 0
