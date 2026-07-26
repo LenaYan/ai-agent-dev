@@ -17,6 +17,7 @@ from langgraph.types import RetryPolicy
 from cn_curriculum_graph.pipeline import assemble as assemble_mod
 from cn_curriculum_graph.pipeline import extract as extract_mod
 from cn_curriculum_graph.pipeline import graph as graph_mod
+from cn_curriculum_graph.pipeline import review as review_mod
 from cn_curriculum_graph.pipeline.faults import wrap_deps
 from cn_curriculum_graph.pipeline.graph import PipelineState, build_graph, retry_on, run_pipeline_lg
 from cn_curriculum_graph.pipeline.models import ProposedEdge, ProposedEdgeBatch
@@ -112,6 +113,52 @@ def test_node_timeout_actually_fires_for_blocking_node_body(tmp_path, monkeypatc
         )
 
     assert "run timeout of 1.000s" in str(exc_info.value)
+
+
+def test_programming_errors_is_imported_from_models_not_duplicated():
+    """S4：graph.py 曾经维护一份与 pipeline/models.py 字面相同的
+    PROGRAMMING_ERRORS 拷贝——今天内容相同不代表以后也同步：往权威定义
+    （models.py，四个模块都 import 它）里加一个类型，不会魔法般同步到
+    这份拷贝。用 `is` 而非 `==` 断言：内容相等的两个独立元组恒为
+    `False is`，只有『同一个对象』才会是 `True`，这正是本条要锁的东西
+    ——graph.py 不该再自己 `= (...)` 出一份，而应该 import 权威定义。"""
+    from cn_curriculum_graph.pipeline import models as models_mod
+
+    assert graph_mod.PROGRAMMING_ERRORS is models_mod.PROGRAMMING_ERRORS
+
+
+def test_retry_on_excludes_value_error_to_avoid_repeating_config_mistakes(tmp_path, monkeypatch):
+    """S3：review.py 里三处空 judges 哨兵抛的是 ValueError——确定性的配置
+    错误（比如忘了传 judges）。RETRY_POLICY 的注释自己写着"程序 bug 不该
+    被重试——重试三次只会把同一个 bug 犯三遍"，但收窄 except 的
+    PROGRAMMING_ERRORS 里没有 ValueError，导致这类配置错误被 Node 级
+    RetryPolicy 犯了三遍。这里用 monkeypatch 包一层计数器套在
+    review_mod.review_drafts 上，验证 ValueError 触发时该函数只被调用
+    1 次（不重试），而不是 max_attempts=3 次。
+    """
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "m.md").write_text("3.1.1 甲。\n", encoding="utf-8")
+
+    real_review_drafts = review_mod.review_drafts
+    calls = {"n": 0}
+
+    def counting_review_drafts(*args, **kwargs):
+        calls["n"] += 1
+        return real_review_drafts(*args, **kwargs)
+
+    monkeypatch.setattr(graph_mod.review_mod, "review_drafts", counting_review_drafts)
+
+    deps = _fake_deps()
+    deps.fidelity_judges = []  # 触发 review_drafts 顶部的空 judges ValueError 哨兵
+
+    with pytest.raises(ValueError):
+        run_pipeline_lg(source, tmp_path / "out", deps, model_id="fake", curriculum="c")
+
+    assert calls["n"] == 1, (
+        f"ValueError（配置错误）不该被 Node 级 RetryPolicy 重试，"
+        f"实际 review_drafts 被调用了 {calls['n']} 次"
+    )
 
 
 def test_transient_failure_is_retried_and_recovers(tmp_path, monkeypatch):

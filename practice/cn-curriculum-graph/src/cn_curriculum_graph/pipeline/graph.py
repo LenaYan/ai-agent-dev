@@ -54,6 +54,7 @@ from cn_curriculum_graph.pipeline import extract as extract_mod
 from cn_curriculum_graph.pipeline import io
 from cn_curriculum_graph.pipeline import review as review_mod
 from cn_curriculum_graph.pipeline.models import (
+    PROGRAMMING_ERRORS,
     Chunk,
     DropRecord,
     Merge,
@@ -66,13 +67,47 @@ from cn_curriculum_graph.pipeline.run import DEFAULT_CURRICULUM, PipelineDeps
 from cn_curriculum_graph.runner import run_all
 from cn_curriculum_graph.validators.base import Finding, Severity
 
-# 程序 bug 不该被重试 —— 重试三次只会把同一个 bug 犯三遍。
-# 与手写版收窄 except 的策略同源（见 extract.py 的 PROGRAMMING_ERRORS）。
-PROGRAMMING_ERRORS = (AttributeError, TypeError, NameError, KeyError)
+# **S4 修复**：PROGRAMMING_ERRORS 的权威定义在 pipeline/models.py（extract.py /
+# dedupe.py / edges.py / review.py 四个模块都从那里 import）。这里改成同样
+# import 而不是自己再字面重复一份 —— 之前这里维护了一份内容相同的独立拷贝，
+# 今天两份一样不代表以后也同步：往权威定义里加一个类型，不会魔法般同步到
+# 一份独立拷贝上，retry_on 会在不知不觉中用着一份过期的排除集合。
+
+# **S3 修复**：Node 级重试要排除的异常集合，在六层函数共用的 PROGRAMMING_ERRORS
+# 之外，再加一个 ValueError。动机：review.py 里三处"空 judges 列表"哨兵
+# （review_drafts ×2、review_edges ×1）抛的正是 ValueError，且是在批处理
+# 循环开始之前就抛出的确定性配置错误（忘了传 judges），不是"这一条数据/
+# 这次调用恰好失败了"。RETRY_POLICY 的注释自己写着"程序 bug 不该被重试——
+# 重试三次只会把同一个 bug 犯三遍"，但收窄的 PROGRAMMING_ERRORS 里没有
+# ValueError，导致这类配置错误被 Node 级 RetryPolicy 原样重犯了三遍（30
+# draft × 2 judge 的生产规模下，一次忘传 judges 的配置错误会白烧约 180 次
+# 真实 LLM 调用外加退避等待，已实测：见 test_retry_on_excludes_value_error_
+# to_avoid_repeating_config_mistakes，RED 时 review_drafts 被调用 3 次）。
+#
+# **我的取舍（ValueError 的边界，S3 明确要求想清楚）**：这里选择的是"全部
+# ValueError 都不重试"，而不是只精确排除"空 judges"这一种情形（那样做需要
+# 一个自定义异常类型或错误码来区分，改动更大，且当前六层函数确实统一用
+# ValueError 表达"确定性配置/契约错误"这一类语义，见 assemble.py 的 id
+# 碰撞检查、review.py 的空 judges 检查——它们都不是"重试一次也许会好"的
+# 瞬时故障）。这个取舍的已知代价：
+# 1. pydantic 的 ValidationError 是 ValueError 的子类。若它意外从某个
+#    Node 体冒泡到这一层（今天的六层函数不会——DraftContent/ProposedEdge
+#    等模型的构造都在各自模块内部完成并被其 PROGRAMMING_ERRORS/Exception
+#    分层捕获），也会被归类为"不重试"。我认为这是可接受的：schema 校验
+#    失败通常是数据形状问题，同一份输入重试三次不会自愈。
+# 2. DeepSeekExtractor/_DeepSeekVoter 在模型没调用强制工具时会
+#    `raise ValueError("模型未调用 XXX 工具...")`——这是一种理论上"重试
+#    也许换个结果"的情形。但今天这个 ValueError 总是先被 extract_all /
+#    review_drafts / review_edges 各自的逐条 try/except 吞掉、转成
+#    DropRecord，不会以裸 ValueError 的身份冒泡到 Node 体外层、也就摸不到
+#    这条 retry_on 排除规则。也就是说，当前代码路径下这条代价是"理论上
+#    存在、实际不会触发"；如果未来六层函数的 catch 边界发生变化，这一点
+#    需要重新评估。
+NODE_RETRY_EXCLUDED_ERRORS = PROGRAMMING_ERRORS + (ValueError,)
 
 
 def retry_on(exc: Exception) -> bool:
-    return not isinstance(exc, PROGRAMMING_ERRORS)
+    return not isinstance(exc, NODE_RETRY_EXCLUDED_ERRORS)
 
 
 RETRY_POLICY = RetryPolicy(max_attempts=3, retry_on=retry_on)
