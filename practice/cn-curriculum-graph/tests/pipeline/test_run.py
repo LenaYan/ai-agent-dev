@@ -623,6 +623,181 @@ def test_pipeline_reports_orphans_created_by_review(tmp_path, engine):
     assert any(d["reason"] == "ORPHANED_BY_REJECTION" for d in drops)
 
 
+def _stage_files_for_comparison(out_dir):
+    """S5：两个引擎全部可观察产物的统一读取口径，缺失文件记 None 而非报错，
+    这样"一个引擎有这个文件、另一个没有"本身也会体现在比对结果里。"""
+    names = (
+        "01-chunks.json",
+        "02-drafts.json",
+        "03-deduped.json",
+        "merges.json",
+        "04-edges.json",
+        "05-reviewed.json",
+        "review-log.json",
+        "dropped.json",
+        "graph.json",
+    )
+    result = {}
+    for name in names:
+        path = out_dir / name
+        result[name] = path.read_text(encoding="utf-8") if path.exists() else None
+    return result
+
+
+def test_two_engines_produce_identical_artifacts_on_normal_run(tmp_path):
+    """S5：206 个测试此前没有一条把两个引擎的产物放在一起比对——每个引擎
+    各自满足性质，但"两边都合法、内容却不同"的差异对旧测试完全不可见。
+    这里逐文件逐字节比对全部可观察产物（正常跑通场景）。"""
+    source = tmp_path / "source" / "math.md"
+    source.parent.mkdir(parents=True)
+    source.write_text(SOURCE, encoding="utf-8")
+
+    deps = _fake_deps()
+
+    def proposer(target, candidates):
+        prereq = candidates[0].draft_id
+        return ProposedEdgeBatch(
+            edges=[
+                ProposedEdge(prerequisite_draft_id=prereq, strength="soft", reason="有帮助"),
+                ProposedEdge(prerequisite_draft_id=prereq, strength="hard", reason="其实必须"),
+            ]
+        )
+
+    deps.edge_proposer = proposer
+
+    out_hw = tmp_path / "out_hw"
+    out_lg = tmp_path / "out_lg"
+    run_pipeline(source.parent, out_hw, deps, model_id="fake", curriculum="c")
+    run_pipeline_lg(source.parent, out_lg, deps, model_id="fake", curriculum="c")
+
+    hw_files = _stage_files_for_comparison(out_hw)
+    lg_files = _stage_files_for_comparison(out_lg)
+    for name in hw_files:
+        assert hw_files[name] == lg_files[name], f"两个引擎的 {name} 内容不一致"
+
+
+def test_two_engines_produce_identical_dropped_json_when_review_edges_crashes(
+    tmp_path, monkeypatch
+):
+    """S2 表格复现 + S5 的跨引擎比对：前置节点被 review 淘汰、随后
+    review_edges 层整体崩溃——这是"崩溃现场两个引擎的 dropped.json
+    不一致"这条 Critical 的其中一个复现场景。这条测试同时钉死 S2 的修复：
+    手写版留痕 REVIEW_REJECTED + EDGE_PREREQUISITE_REJECTED，LangGraph 版
+    修复前把 append_drops 统一挪到 Node 体末尾，review_edges 崩溃时这两条
+    记录全部随进程一起消失。"""
+    from cn_curriculum_graph.pipeline import review as review_mod
+
+    source = tmp_path / "source" / "math.md"
+    source.parent.mkdir(parents=True)
+    source.write_text(SOURCE, encoding="utf-8")
+
+    deps = _deps_rejecting("认识100以内的数")  # 淘汰前置节点
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("模拟 review_edges 层崩溃")
+
+    monkeypatch.setattr(review_mod, "review_edges", boom)
+
+    out_hw = tmp_path / "out_hw"
+    out_lg = tmp_path / "out_lg"
+
+    with pytest.raises(RuntimeError):
+        run_pipeline(source.parent, out_hw, deps, model_id="fake", curriculum="c")
+    with pytest.raises(RuntimeError):
+        run_pipeline_lg(source.parent, out_lg, deps, model_id="fake", curriculum="c")
+
+    hw_drops = json.loads((out_hw / "dropped.json").read_text(encoding="utf-8"))
+    lg_drops = json.loads((out_lg / "dropped.json").read_text(encoding="utf-8"))
+    assert lg_drops == hw_drops
+    # 复现的具体断言：淘汰前置节点和它牵连的边都必须留痕，不能只剩空壳
+    assert any(d["reason"] == "REVIEW_REJECTED" for d in hw_drops)
+    assert any(d["reason"] == "EDGE_PREREQUISITE_REJECTED" for d in hw_drops)
+
+
+def test_two_engines_produce_identical_dropped_json_when_run_all_crashes_after_duplicate_edge(
+    tmp_path, monkeypatch
+):
+    """S2 表格复现（第 1 行）：重复边去重记账之后、run_all 校验崩溃。手写版
+    在调用 assemble/run_all 之前就把 DUPLICATE_EDGE 落盘；LangGraph 版
+    修复前把这次 append 拖到 run_all 之后才做（node_assemble 早期设计的
+    "只在 Node 整体成功后才写盘"），run_all 一崩，这条记录随进程一起消失。
+    """
+    import cn_curriculum_graph.pipeline.graph as graph_mod
+    from cn_curriculum_graph.pipeline import run as run_mod
+
+    source = tmp_path / "source" / "math.md"
+    source.parent.mkdir(parents=True)
+    source.write_text(SOURCE + "\n这一段是导言，没有编号。\n", encoding="utf-8")
+
+    deps = _fake_deps()
+
+    def proposer(target, candidates):
+        prereq = candidates[0].draft_id
+        return ProposedEdgeBatch(
+            edges=[
+                ProposedEdge(prerequisite_draft_id=prereq, strength="soft", reason="有帮助"),
+                ProposedEdge(prerequisite_draft_id=prereq, strength="hard", reason="其实必须"),
+            ]
+        )
+
+    deps.edge_proposer = proposer
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("模拟 run_all 崩溃")
+
+    monkeypatch.setattr(run_mod, "run_all", boom)
+    monkeypatch.setattr(graph_mod, "run_all", boom)
+
+    out_hw = tmp_path / "out_hw"
+    out_lg = tmp_path / "out_lg"
+
+    with pytest.raises(RuntimeError):
+        run_pipeline(source.parent, out_hw, deps, model_id="fake", curriculum="c")
+    with pytest.raises(RuntimeError):
+        run_pipeline_lg(source.parent, out_lg, deps, model_id="fake", curriculum="c")
+
+    hw_drops = json.loads((out_hw / "dropped.json").read_text(encoding="utf-8"))
+    lg_drops = json.loads((out_lg / "dropped.json").read_text(encoding="utf-8"))
+    assert lg_drops == hw_drops
+    assert any(d["reason"] == "NO_STANDARD_CODE" for d in hw_drops)
+    assert any(d["reason"] == "DUPLICATE_EDGE" for d in hw_drops)
+
+
+def test_two_engines_produce_identical_dropped_json_when_all_rejected_and_review_edges_crashes(
+    tmp_path, monkeypatch
+):
+    """S2 表格复现（第 3 行）：全部草稿被 fidelity 否决，随后 review_edges
+    层整体崩溃。手写版留痕 REVIEW_REJECTED×2 + EDGE_TARGET_REJECTED；
+    LangGraph 版修复前只剩 chunk 层的记录。"""
+    from cn_curriculum_graph.pipeline import review as review_mod
+
+    source = tmp_path / "source" / "math.md"
+    source.parent.mkdir(parents=True)
+    source.write_text(SOURCE, encoding="utf-8")
+
+    deps = _fake_deps()
+    deps.fidelity_judges = [lambda d: Vote(reviewer="fake", approved=False, reason="全部否决")]
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("模拟 review_edges 层崩溃")
+
+    monkeypatch.setattr(review_mod, "review_edges", boom)
+
+    out_hw = tmp_path / "out_hw"
+    out_lg = tmp_path / "out_lg"
+
+    with pytest.raises(RuntimeError):
+        run_pipeline(source.parent, out_hw, deps, model_id="fake", curriculum="c")
+    with pytest.raises(RuntimeError):
+        run_pipeline_lg(source.parent, out_lg, deps, model_id="fake", curriculum="c")
+
+    hw_drops = json.loads((out_hw / "dropped.json").read_text(encoding="utf-8"))
+    lg_drops = json.loads((out_lg / "dropped.json").read_text(encoding="utf-8"))
+    assert lg_drops == hw_drops
+    assert len([d for d in hw_drops if d["reason"] == "REVIEW_REJECTED"]) == 2
+    assert any(d["reason"] == "EDGE_TARGET_REJECTED" for d in hw_drops)
+
+
 @ENGINES
 def test_pipeline_does_not_claim_consistency_was_skipped(tmp_path, engine):
     """review 层明明跑过 name judge，最终报告却说『已跳过』—— 这条留痕机制

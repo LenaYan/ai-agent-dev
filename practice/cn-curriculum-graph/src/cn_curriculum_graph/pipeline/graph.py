@@ -290,30 +290,59 @@ async def node_review(state: PipelineState, runtime) -> dict:
     `await asyncio.to_thread(...)` 包起来——见 NODE_TIMEOUT 定义处的 C1
     修复记录。中间的 filter_edges_by_kept_drafts / detect_orphans 是纯
     Python 集合运算，不碰网络，没有阻塞事件循环的必要，保持直接同步调用。
+
+    **S2 修复：append_drops 按手写版的粒度、算出来就立刻落盘，而不是攒到
+    函数末尾一次性 append**。早期实现把四段 drops（draft_review.drops /
+    prefilter_drops / edge_review.drops / orphan_drops）攒起来，在函数最后
+    合并成一次 `io.append_drops` 调用；这与手写版 `run_pipeline` 的四次独立
+    `io.append_drops`（每算出一段就立刻写）在"零故障"时最终文件内容相同，
+    但一旦 `review_edges` 在中途抛出异常（Node 整个失败、从未走到函数末尾
+    那次合并 append），此前已经算出的 `draft_review.drops` /
+    `prefilter_drops` 会随进程一起丢失——而手写版此时已经把它们写盘了。
+    已实测复现（见 test_run.py 的
+    `test_two_engines_produce_identical_dropped_json_when_review_edges_crashes`
+    等三个场景，RED 时 LangGraph 版 dropped.json 缺失或残缺，见
+    task-5-report.md）。
+
+    修复：拆回四次独立 `io.append_drops`，顺序与手写版一一对应
+    （draft_review.drops → prefilter_drops → edge_review.drops →
+    orphan_drops）。checkpoint 重跑时 Node 若整体重新执行，这四次 append
+    会把同样的记录再算一遍、再写一遍——靠 `io.append_drops` 新增的幂等
+    （按 `(stage, ref, reason, detail)` 去重，见 io.py 的 docstring）兜住，
+    不会产生重复记录。
     """
     deps = runtime.context
+    drops_path = _out(state) / "dropped.json"
+
     draft_review = await asyncio.to_thread(
         review_mod.review_drafts, state["deduped"], deps.fidelity_judges, deps.name_judges
     )
+    io.append_drops(drops_path, draft_review.drops)
+
     kept_ids = {d.draft_id for d in draft_review.kept}
     surviving, prefilter_drops = review_mod.filter_edges_by_kept_drafts(
         state["proposed"], kept_ids
     )
+    io.append_drops(drops_path, prefilter_drops)
+
     edge_review = await asyncio.to_thread(
         review_mod.review_edges,
         {d.draft_id: d for d in draft_review.kept},
         surviving,
         deps.edge_judges,
     )
+    io.append_drops(drops_path, edge_review.drops)
+
     orphan_drops = review_mod.detect_orphans(
         draft_review.kept, state["proposed"], edge_review.kept_edges
     )
+    io.append_drops(drops_path, orphan_drops)
+
     io.write_stage(_out(state) / "05-reviewed.json", draft_review.kept)
     io.write_stage(
         _out(state) / "review-log.json", draft_review.outcomes + edge_review.outcomes
     )
     review_drops = draft_review.drops + prefilter_drops + edge_review.drops + orphan_drops
-    io.append_drops(_out(state) / "dropped.json", review_drops)
     return {
         "reviewed": draft_review.kept,
         "kept_edges": edge_review.kept_edges,
@@ -323,51 +352,51 @@ async def node_review(state: PipelineState, runtime) -> dict:
 
 
 def node_assemble(state: PipelineState, runtime) -> dict:
-    """**dup_drops 的落盘时机是任务描述的交互风险的具体落地点**：这里刻意把
-    `io.append_drops` 挪到函数最末尾，而不是像早期实现那样紧跟在
-    `dedupe_edges_by_pair` 之后就立刻写盘。
+    """**S2 修复（推翻此前"挪到函数末尾"的方案，改回手写版同序）**：早期
+    实现刻意把 `dup_drops` 的 `io.append_drops` 挪到函数最末尾（"整个 Node
+    成功后才写盘"），理由是 assemble 没有 `retry_policy`，checkpoint 重跑
+    会让函数体整个重新执行，若在 `assemble_mod.assemble`/`run_all` 之前就
+    落盘，重跑会让 `dup_drops` 重复 append。
 
-    原因：`assemble` 没有挂 `retry_policy`（纯规则层，LangGraph 不会自动
-    重试），它唯一的"重跑"入口是调用方带着同一个 `checkpoint_db` /
-    `thread_id` 再调一次 `run_pipeline_lg`。若在 `assemble_mod.assemble`
-    / `run_all` 之前就把 `dup_drops` 落盘，一旦这两步之后失败，
-    `node_assemble` 从未成功完成、checkpoint 里也就没有它的输出，下一次
-    续跑会把这个函数从头整个重新执行一遍——`dup_drops` 会被重新算出、
-    再 append 一次，dropped.json 里每条 DUPLICATE_EDGE 都会变成两份
-    （已用 test_assemble_retry_via_checkpoint_does_not_duplicate_drops
-    实测复现：修复前 2 条，见 task-5-report.md 的 RED 输出）。
+    但这个方案本身制造了一个新问题，且更严重：`run_all` 校验本身抛出异常
+    时（例如校验器 bug），`dup_drops` 从未被落盘，而手写版 `run_pipeline`
+    是在调用 `assemble`/`run_all` **之前**就把 `duplicate_edge_drops`
+    append 了——两个引擎在"崩溃现场"的 dropped.json 从此不再对等（已实测
+    复现：`test_two_engines_produce_identical_dropped_json_when_run_all_
+    crashes_after_duplicate_edge`，RED 时 LangGraph 版缺失 DUPLICATE_EDGE
+    记录）。这违反本分支的核心前提——两个引擎只在编排机制上不同，不在
+    可观察产物上不同。
 
-    修复方式：把 `io.append_drops(dup_drops)` 这个 **append 型**写入挪到
-    "整个 Node 都跑成功"之后，与 extract/dedupe/edges/review 四层已经在用
-    的模式一致——那四层的 `io.append_drops` 也全部放在函数体最后。这样无论
-    assemble 是被自动重试（它没有）还是被手工重新调用 `run_pipeline_lg`
-    恢复，失败的那次尝试在还没走到这一行之前就已经抛出，不会重复
-    append；只有最终成功的那次调用会 append 一次。
+    **现在的修法**：把 `io.append_drops(dup_drops)` 挪回
+    `dedupe_edges_by_pair` 算出来之后立刻执行，与手写版顺序一致；
+    checkpoint 重跑导致的重复 append 交给 `io.append_drops` 新增的幂等
+    （按 `(stage, ref, reason, detail)` 去重，见 io.py 的 docstring）兜住，
+    而不是靠"延后写盘的时机"人工避免重复。
+    `test_assemble_retry_via_checkpoint_does_not_duplicate_drops` 仍然
+    覆盖"checkpoint 重跑不产生重复记录"这条要求，只是现在由幂等而非时机
+    来满足。
 
-    **I2 澄清（Task 5 code review 指出，本函数内部并不完全满足这条不变量，
-    我的判断如下）**：这条"只在 Node 成功后才写盘"的说法，严格来说只对
-    `dup_drops` 这一处 append 型写入成立——本函数里还有一处 `graph.json`
-    的写入（`(_out(state) / "graph.json").write_text(...)`），它排在
-    `run_all` **之前**，`run_all` 之后仍可能抛异常（校验器 bug、意外
-    异常等），届时 `graph.json` 已经落盘但 Node 整体判定为失败。这不算
-    危险——`write_text` 是**覆盖型**写入，天然幂等：不管这次尝试成功还是
-    后续重跑覆盖它多少次，磁盘上最终只有一份内容，不会像 append 型写入
-    那样"重复的尝试 = 重复的记录"。我选择不把它挪到函数末尾：那样做的
-    代价是——若 `run_all`（纯校验、不改图）抛异常，会连带丢失本次已经
+    **`graph.json` 的写入时机不变**：它排在 `run_all` 之前，`run_all`
+    之后仍可能抛异常，届时 `graph.json` 已经落盘但 Node 整体判定为失败。
+    这不算危险——`write_text` 是**覆盖型**写入，天然幂等，不管重跑多少次
+    磁盘上最终只有一份内容，不像 append 型写入那样"重复的尝试 = 重复的
+    记录"。挪到函数末尾的代价是：若 `run_all` 抛异常，会连带丢失本次已经
     正确装配出来的 `graph.json`，对定位"是校验器崩了还是图本身有问题"
-    反而更不利。准确的表述是：**append 型写入只应发生在 Node 成功之后；
-    覆盖型写入本身幂等、对写入时机不敏感**，两者不能用同一条"只在成功后
-    写盘"的规则一刀切地要求。
+    反而更不利，所以维持原样。
 
     **无论哪种写入方式都盖不住的一个洞**：Node 函数体跑完（包括这里的
     `io.append_drops`）到 LangGraph 把这次执行结果落进 checkpoint 数据库
     之间，如果进程在这个窗口被硬杀（SIGKILL 等，而非 Python 异常），
     LangGraph 不会认为这次执行已完成，下一次 resume 会把整个 Node 从头
-    重新跑一遍——`dup_drops` 会被重新算出并再 append 一次，产生与本任务
-    描述的原始 bug 相同的重复记录，这条修复对这个更窄的时间窗口没有防护，
-    只有"进程本身抛出的 Python 异常"这一类失败被这次修复覆盖到。
+    重新跑一遍——`dup_drops` 会被重新算出并再 append 一次；这次不会产生
+    重复记录（幂等兜底），但如果那个更窄的时间窗口里 checkpoint 落盘发生
+    在两次 append 之间的某个更细粒度切面上，仍然只有"进程本身抛出的
+    Python 异常"这一类失败被这次修复覆盖到，SIGKILL 类失败不在讨论范围内。
     """
+    drops_path = _out(state) / "dropped.json"
     deduped_edges, dup_drops = assemble_mod.dedupe_edges_by_pair(state["kept_edges"])
+    io.append_drops(drops_path, dup_drops)
+
     graph = assemble_mod.assemble(
         state["reviewed"],
         deduped_edges,
@@ -396,8 +425,6 @@ def node_assemble(state: PipelineState, runtime) -> dict:
                 },
             )
         )
-    # 整个 Node 成功跑完之后才写盘一次——见函数顶部文档
-    io.append_drops(_out(state) / "dropped.json", dup_drops)
     return {"findings": findings, "drops": dup_drops}
 
 
