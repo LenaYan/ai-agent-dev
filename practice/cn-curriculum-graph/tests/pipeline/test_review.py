@@ -131,6 +131,98 @@ def test_edges_are_reviewed_and_rejected_ones_dropped():
     assert "bad" in result.drops[0].detail
 
 
+def test_fidelity_judge_failure_drops_the_draft_conservatively_without_crashing():
+    """设计文档 §6：单条目失败不中断整批。review 是全流水线调用量最高的一层
+    （约为 extract 的 4-6 倍），任意一次限流/超时都会撞上；一次抛异常绝不能
+    让 run_pipeline 整体崩掉、丢光前几层的 LLM 花费。判定器没能表态时，
+    按本层"分歧即淘汰"的精神保守处理：该草稿判为未通过，而不是放行。"""
+
+    def flaky_fidelity(draft: TopicDraft) -> Vote:
+        if draft.draft_id == "a":
+            raise RuntimeError("429")
+        return Vote(reviewer="fake", approved=True, reason="ok")
+
+    other_draft = _draft("b", "另一个知识点")
+    result = review_drafts(
+        [_draft("a"), other_draft],
+        fidelity_judges=[flaky_fidelity],
+        name_judges=[_name_judge("consistent")],
+    )
+
+    # 出问题的那条被保守淘汰，记账原因码专门区分于普通 REVIEW_REJECTED
+    assert "a" not in {d.draft_id for d in result.kept}
+    fail_drops = [d for d in result.drops if d.reason == "FIDELITY_JUDGE_FAILED"]
+    assert len(fail_drops) == 1
+    assert fail_drops[0].ref == "a"
+    assert "RuntimeError" in fail_drops[0].detail
+
+    # 其余草稿不受影响，照常评审通过
+    assert "b" in {d.draft_id for d in result.kept}
+
+
+def test_name_judge_failure_drops_the_draft_conservatively_without_crashing():
+    def flaky_name_judge(name: str, description: str):
+        raise RuntimeError("timeout")
+
+    result = review_drafts(
+        [_draft("a")],
+        fidelity_judges=[_fidelity(True)],
+        name_judges=[flaky_name_judge],
+    )
+
+    assert result.kept == []
+    fail_drops = [d for d in result.drops if d.reason == "NAME_JUDGE_FAILED"]
+    assert len(fail_drops) == 1
+    assert fail_drops[0].ref == "a"
+    assert "RuntimeError" in fail_drops[0].detail
+
+
+def test_edge_judge_failure_drops_the_edge_conservatively_without_crashing():
+    def flaky_edge_judge(target, edge):
+        raise RuntimeError("429")
+
+    edges = {
+        "a": [ProposedEdge(prerequisite_draft_id="good", strength="hard", reason="站得住")],
+    }
+
+    result = review_edges({"a": _draft("a")}, edges, edge_judges=[flaky_edge_judge])
+
+    assert result.kept_edges["a"] == []
+    fail_drops = [d for d in result.drops if d.reason == "EDGE_JUDGE_FAILED"]
+    assert len(fail_drops) == 1
+    assert "a<-good" in fail_drops[0].ref
+    assert "RuntimeError" in fail_drops[0].detail
+
+
+def test_review_reraises_programming_errors_instead_of_recording_a_drop():
+    """AttributeError/TypeError/NameError/KeyError 是程序 bug，不该被
+    FIDELITY_JUDGE_FAILED/NAME_JUDGE_FAILED/EDGE_JUDGE_FAILED 悄悄吞掉。"""
+    import pytest
+
+    def buggy_fidelity(draft: TopicDraft) -> Vote:
+        raise AttributeError("拼错了属性名")
+
+    with pytest.raises(AttributeError):
+        review_drafts(
+            [_draft()], fidelity_judges=[buggy_fidelity], name_judges=[_name_judge("consistent")]
+        )
+
+    def buggy_name_judge(name: str, description: str):
+        raise TypeError("参数不对")
+
+    with pytest.raises(TypeError):
+        review_drafts(
+            [_draft()], fidelity_judges=[_fidelity(True)], name_judges=[buggy_name_judge]
+        )
+
+    def buggy_edge_judge(target, edge):
+        raise KeyError("some_key")
+
+    edges = {"a": [ProposedEdge(prerequisite_draft_id="good", strength="hard", reason="站得住")]}
+    with pytest.raises(KeyError):
+        review_edges({"a": _draft("a")}, edges, edge_judges=[buggy_edge_judge])
+
+
 def test_review_edges_skips_unknown_target_without_crashing():
     """预先算好的 drafts_by_id 与 edges 字典键不一定同步（例如上游只传审核后
     幸存的 draft，edges 里却还留着已被淘汰目标的边）。查不到目标不能让整层

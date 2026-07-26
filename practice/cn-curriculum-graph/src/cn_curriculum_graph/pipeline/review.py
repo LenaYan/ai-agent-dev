@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from cn_curriculum_graph.judges.deepseek_judge import DEEPSEEK_BASE_URL
 from cn_curriculum_graph.pipeline.models import (
+    PROGRAMMING_ERRORS,
     DropRecord,
     ProposedEdge,
     ReviewOutcome,
@@ -176,7 +177,27 @@ def review_drafts(
     for draft in drafts:
         rejected: list[str] = []
 
-        fidelity_votes = [judge(draft) for judge in fidelity_judges]
+        # review 是全流水线调用量最高的一层（约为 extract 的 4-6 倍），任意一次
+        # 限流/超时/网络抖动都会撞上。判定器裸调会让单次失败直接掀翻整批
+        # run_pipeline（设计文档 §6：单条目失败不中断整批）。判定器没能表态时，
+        # 按本层"分歧即淘汰、宁可少产出"的精神保守处理——该草稿判为淘汰，
+        # 而不是放行；原因码与普通的 REVIEW_REJECTED 区分开，便于区分
+        # "评审说不行" 和 "评审根本没跑起来"。
+        try:
+            fidelity_votes = [judge(draft) for judge in fidelity_judges]
+        except PROGRAMMING_ERRORS:  # 程序 bug，不该伪装成判定器失败，直接冒泡
+            raise
+        except Exception as exc:  # noqa: BLE001 —— 单条目失败不中断整批
+            drops.append(
+                DropRecord(
+                    stage="review",
+                    ref=draft.draft_id,
+                    reason="FIDELITY_JUDGE_FAILED",
+                    detail=f"{type(exc).__name__}: {exc}（判定器未能表态，保守淘汰该草稿）",
+                )
+            )
+            continue
+
         fidelity_ok = all(v.approved for v in fidelity_votes)
         outcomes.append(
             ReviewOutcome(
@@ -191,16 +212,30 @@ def review_drafts(
 
         # 名实一致复用三档 judge：topic_mismatch 才淘汰，
         # scope_mismatch 是 WARNING 级，保留但留痕 —— 与校验层的两级严重性一致
-        name_votes: list[Vote] = []
-        for judge in name_judges:
-            verdict = judge(name=draft.content.name, description=draft.content.description)
-            name_votes.append(
-                Vote(
-                    reviewer="name_desc",
-                    approved=verdict.judgment != "topic_mismatch",
-                    reason=f"{verdict.judgment}: {verdict.reason}",
+        try:
+            name_votes: list[Vote] = []
+            for judge in name_judges:
+                verdict = judge(name=draft.content.name, description=draft.content.description)
+                name_votes.append(
+                    Vote(
+                        reviewer="name_desc",
+                        approved=verdict.judgment != "topic_mismatch",
+                        reason=f"{verdict.judgment}: {verdict.reason}",
+                    )
+                )
+        except PROGRAMMING_ERRORS:
+            raise
+        except Exception as exc:  # noqa: BLE001 —— 单条目失败不中断整批
+            drops.append(
+                DropRecord(
+                    stage="review",
+                    ref=draft.draft_id,
+                    reason="NAME_JUDGE_FAILED",
+                    detail=f"{type(exc).__name__}: {exc}（判定器未能表态，保守淘汰该草稿）",
                 )
             )
+            continue
+
         name_ok = all(v.approved for v in name_votes)
         outcomes.append(
             ReviewOutcome(
@@ -269,11 +304,26 @@ def review_edges(
 
         kept_edges[target_id] = []
         for edge in proposed:
-            votes = [judge(target, edge) for judge in edge_judges]
+            pair_ref = f"{target_id}<-{edge.prerequisite_draft_id}"
+            try:
+                votes = [judge(target, edge) for judge in edge_judges]
+            except PROGRAMMING_ERRORS:  # 程序 bug，不该伪装成判定器失败，直接冒泡
+                raise
+            except Exception as exc:  # noqa: BLE001 —— 单条边失败不中断整批
+                drops.append(
+                    DropRecord(
+                        stage="review",
+                        ref=pair_ref,
+                        reason="EDGE_JUDGE_FAILED",
+                        detail=f"{type(exc).__name__}: {exc}（判定器未能表态，保守淘汰该边）",
+                    )
+                )
+                continue
+
             approved = all(v.approved for v in votes)
             outcomes.append(
                 ReviewOutcome(
-                    target=f"{target_id}<-{edge.prerequisite_draft_id}",
+                    target=pair_ref,
                     aspect="edge_reason",
                     votes=votes,
                     approved=approved,
@@ -285,9 +335,13 @@ def review_edges(
                 drops.append(
                     DropRecord(
                         stage="review",
-                        ref=target_id,
+                        # ref 用 "target<-prereq" 而非裸 target_id：与 review_drafts
+                        # 淘汰节点的 REVIEW_REJECTED（ref=draft_id）区分开，否则
+                        # 同一 reason 码在两处含义不同，下游按 ref 归因会分不清
+                        # 到底丢的是一整个节点还是一条边。
+                        ref=pair_ref,
                         reason="REVIEW_REJECTED",
-                        detail=f"边 {target_id}<-{edge.prerequisite_draft_id} 未通过审核",
+                        detail=f"边 {pair_ref} 未通过审核",
                     )
                 )
 
