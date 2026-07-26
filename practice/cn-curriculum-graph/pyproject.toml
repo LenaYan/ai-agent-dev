@@ -14,6 +14,7 @@ dependencies = [
 
 [project.scripts]
 ccg-validate = "cn_curriculum_graph.cli:main"
+ccg-generate = "cn_curriculum_graph.pipeline.run:main"
 
 [dependency-groups]
 dev = [

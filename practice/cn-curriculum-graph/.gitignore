@@ -1,0 +1,4 @@
+
+# 生成产物：本项目的资产是流水线不是数据集；且内容派生自课标文本，
+# 仓库公开，不做对外分发（见 docs/feasibility-analysis.md 闸门 1）
+data/generated/
