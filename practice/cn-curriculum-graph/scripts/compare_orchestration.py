@@ -273,6 +273,13 @@ def _invoke(engine: str, source: Path, out: Path, deps: PipelineDeps, db: Path) 
     if engine == "handwritten":
         # 手写版没有重入能力：第二轮必然从头跑，这正是要量的差异
         run_pipeline(source, out, deps, model_id="fake", curriculum="c")
+    elif engine == "fanout":
+        from cn_curriculum_graph.pipeline.graph_fanout import run_pipeline_fanout
+
+        run_pipeline_fanout(
+            source, out, deps, model_id="fake", curriculum="c",
+            checkpoint_db=db, thread_id="exp",
+        )
     else:
         run_pipeline_lg(
             source, out, deps, model_id="fake", curriculum="c",
@@ -369,7 +376,7 @@ def main(argv: list[str] | None = None) -> int:
     root = Path("/tmp/ccg-compare")
     rows: list[tuple[Scenario, ScenarioResult]] = []
     for scenario in SCENARIOS:
-        for engine in ("handwritten", "langgraph"):
+        for engine in ("handwritten", "langgraph", "fanout"):
             result = run_scenario(
                 engine, scenario, root / f"{scenario.name}-{engine}",
                 chunks=args.chunks, judges_per_category=args.judges_per_category,
