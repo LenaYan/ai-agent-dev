@@ -52,7 +52,7 @@
 
 **Interfaces:**
 - Consumes: `cn_curriculum_graph.models.{Misconception, TopicType, Strength}`
-- Produces: `Chunk`, `DraftContent`, `TopicDraft`, `ProposedEdge`, `Vote`, `ReviewOutcome`, `DropRecord`, `Merge`；`io.write_stage/read_stage/append_drops`
+- Produces: `Chunk`, `DraftContent`, `DraftBatch`, `TopicDraft`, `ProposedEdge`, `ProposedEdgeBatch`, `TargetedEdge`, `Vote`, `ReviewOutcome`, `DropRecord`, `Merge`；`io.write_stage/read_stage/append_drops`
 
 - [ ] **Step 1: 写失败测试 —— 模型的字段归属边界**
 
@@ -224,6 +224,15 @@ class ProposedEdgeBatch(BaseModel):
     edges: list[ProposedEdge] = Field(default_factory=list)
 
 
+class TargetedEdge(BaseModel):
+    """落盘用：ProposedEdge 只记前置，不记它属于谁 —— 落到文件里就读不出来了。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_draft_id: str
+    edge: ProposedEdge
+
+
 class Vote(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -380,7 +389,7 @@ def append_drops(path: Path, records: list[BaseModel]) -> None:
 ```bash
 uv run pytest -q
 ```
-Expected: PASS，62 passed（原 58 + 新增 4... 实际为 58 + 6 + 4 = 68）
+Expected: PASS，全绿（原有 58 个 + 本 Task 新增 11 个）
 
 - [ ] **Step 9: 提交**
 
@@ -689,7 +698,6 @@ def test_deepseek_extractor_forces_the_batch_tool_deterministically():
 
 
 def test_deepseek_extractor_raises_when_the_model_skips_the_tool():
-    recorder: dict = {}
     client = SimpleNamespace(
         messages=SimpleNamespace(
             create=lambda **kw: SimpleNamespace(
@@ -925,7 +933,9 @@ def test_pairs_drafts_with_similar_names_above_threshold():
 
 
 def test_pairs_drafts_sharing_a_standard_code():
-    left, right = _draft("a-1", "甲概念"), _draft("b-1", "完全不同的乙")
+    """名字毫不相干，但出自同一条课标条目 —— 也要进候选。"""
+    left, right = _draft("a-1", "甲概念"), _draft("b-2", "完全不同的乙")
+    assert left.standard_codes != right.standard_codes  # 前提：默认编号本不相同
     right.standard_codes = list(left.standard_codes)
 
     assert candidate_pairs([left, right]) == [(0, 1)]
@@ -1683,7 +1693,7 @@ git commit -m "feat(pipeline): edges 层，剪枝规则由校验规则反推
 
 from types import SimpleNamespace
 
-from cn_curriculum_graph.pipeline.models import DraftContent, ProposedEdge, TopicDraft
+from cn_curriculum_graph.pipeline.models import DraftContent, ProposedEdge, TopicDraft, Vote
 from cn_curriculum_graph.pipeline.review import (
     FIDELITY_TOOL_NAME,
     DeepSeekFidelityJudge,
@@ -1714,8 +1724,6 @@ def _draft(draft_id: str = "a", name: str = "小数的意义") -> TopicDraft:
 
 
 def _fidelity(approved: bool, reviewer: str = "fake"):
-    from cn_curriculum_graph.pipeline.models import Vote
-
     def judge(draft: TopicDraft) -> Vote:
         return Vote(reviewer=reviewer, approved=approved, reason="测试")
 
@@ -1788,8 +1796,6 @@ def test_every_decision_is_recorded_even_when_approved():
 
 
 def test_edges_are_reviewed_and_rejected_ones_dropped():
-    from cn_curriculum_graph.pipeline.models import Vote
-
     def approve(target, edge):
         return Vote(reviewer="甲", approved=edge.prerequisite_draft_id == "good", reason="测试")
 
@@ -2513,7 +2519,7 @@ from cn_curriculum_graph.pipeline import edges as edges_mod
 from cn_curriculum_graph.pipeline import extract as extract_mod
 from cn_curriculum_graph.pipeline import io
 from cn_curriculum_graph.pipeline import review as review_mod
-from cn_curriculum_graph.pipeline.models import Chunk, ProposedEdge, TopicDraft
+from cn_curriculum_graph.pipeline.models import Chunk, TargetedEdge, TopicDraft
 from cn_curriculum_graph.runner import has_errors, run_all
 from cn_curriculum_graph.validators.base import Finding
 
@@ -2580,9 +2586,14 @@ def run_pipeline(
     # 4 edges
     proposed, dropped = edges_mod.propose_all(deduped.kept, deps.edge_proposer)
     io.append_drops(drops_path, dropped)
+    # 用 TargetedEdge 落盘：ProposedEdge 不带目标 id，直接摊平会读不出边属于谁
     io.write_stage(
         out_dir / "04-edges.json",
-        [e for group in proposed.values() for e in group],
+        [
+            TargetedEdge(target_draft_id=target, edge=e)
+            for target, group in proposed.items()
+            for e in group
+        ],
     )
 
     # 5 review
