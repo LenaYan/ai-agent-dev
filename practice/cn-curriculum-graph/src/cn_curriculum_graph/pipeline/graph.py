@@ -213,7 +213,14 @@ class PipelineState(TypedDict, total=False):
     curriculum: str
 
     chunks: list[Chunk]
-    drafts: list[TopicDraft]
+    # **B 阶段追加的 reducer**：drafts 原本是覆盖语义（A 阶段 node_extract 是
+    # 唯一写它的 Node，覆盖等价于累加，改动不影响 A 阶段行为——已用全量测试
+    # 实测确认，见 graph_fanout.py 顶部的任务报告）。B 阶段把 extract 扇出到
+    # 条目级后，多个并发 Send 任务会在同一个 superstep 里各自写一份 drafts
+    # delta；LangGraph 要求同一 step 内对同一 channel 的多次写入必须有 reducer
+    # 才能合并，否则会抛 InvalidUpdateError。operator.add 就是这里需要的
+    # "多份 delta 拼接成一份完整列表"语义。
+    drafts: Annotated[list[TopicDraft], operator.add]
     deduped: list[TopicDraft]
     merges: list[Merge]
     proposed: dict[str, list[ProposedEdge]]
