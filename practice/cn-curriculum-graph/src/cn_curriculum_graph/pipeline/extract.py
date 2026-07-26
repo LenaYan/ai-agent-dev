@@ -4,6 +4,10 @@
 照收 output_format 却不遵守（实测返回自由文本），强制工具调用才可移植。
 工具的 input_schema 就是 DraftBatch —— 也就是说，模型能填什么字段，
 由类型系统而非提示词约束。
+
+**为什么关 thinking。** DeepSeek v4 默认开思考模式，而思考模式下不接受强制
+`tool_choice`（实测直接返回 400："Thinking mode does not support this
+tool_choice"）。名实抽取是有界任务（拆条目、填字段），也不需要思考预算。
 """
 
 from __future__ import annotations
@@ -32,7 +36,7 @@ _SYSTEM = (
     "只依据给你的正文，不要引入正文之外的内容。"
 )
 
-_TOOL = {
+_EXTRACT_TOOL = {
     "name": EXTRACT_TOOL_NAME,
     "description": "记录从这条课标条目抽出的全部知识点",
     "input_schema": DraftBatch.model_json_schema(),
@@ -61,7 +65,7 @@ class DeepSeekExtractor:
             temperature=0,
             system=_SYSTEM,
             messages=[{"role": "user", "content": f"课标条目正文：\n{chunk.text}"}],
-            tools=[_TOOL],
+            tools=[_EXTRACT_TOOL],
             tool_choice={"type": "tool", "name": EXTRACT_TOOL_NAME},
             thinking={"type": "disabled"},
         )

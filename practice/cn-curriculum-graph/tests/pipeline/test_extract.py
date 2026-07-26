@@ -114,6 +114,46 @@ def test_deepseek_extractor_forces_the_batch_tool_deterministically():
     assert tool["input_schema"] == DraftBatch.model_json_schema()
 
 
+def _collect_property_names(schema: dict) -> set[str]:
+    """递归收集 schema 里所有 "properties" 下的字段名（含 $defs 被引用的子 schema）。
+
+    只看属性名，不把整份 schema 序列化成字符串去 grep —— `DraftContent` 的类
+    docstring 里提到了 "chunk_id" "standard_codes" 等字段名作为解释性文字，
+    会出现在 schema 的 description 里，字符串匹配会把这些误报成字段泄漏。
+    """
+    names: set[str] = set()
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            props = node.get("properties")
+            if isinstance(props, dict):
+                names.update(props.keys())
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(schema)
+    return names
+
+
+def test_extract_tool_schema_never_exposes_code_owned_fields():
+    """核心红线：给模型的 input_schema 里绝不能出现这五个代码专属字段。
+
+    `DraftBatch` 的 schema 用 `$defs` 引用了内层 `DraftContent`（以及更内层的
+    `Misconception`），只查顶层 properties 抓不到内层泄漏，所以要递归查。
+    这条测试跟 `tests/pipeline/test_models.py` 里
+    `test_draft_content_schema_excludes_code_owned_fields` 的区别：那条锁的是
+    `DraftContent` 单独导出的 schema，这条锁的是 extract 层真正传给模型的
+    `DraftBatch`（外层）schema —— 往 `DraftBatch` 本身误加字段，内层测试测不到。
+    """
+    schema = DraftBatch.model_json_schema()
+    forbidden = {"chunk_id", "standard_codes", "draft_id", "id", "provenance"}
+
+    assert _collect_property_names(schema).isdisjoint(forbidden)
+
+
 def test_deepseek_extractor_raises_when_the_model_skips_the_tool():
     client = SimpleNamespace(
         messages=SimpleNamespace(
