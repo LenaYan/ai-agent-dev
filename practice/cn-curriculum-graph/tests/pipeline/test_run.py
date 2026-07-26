@@ -277,11 +277,41 @@ def test_duplicate_proposed_edge_is_collapsed_and_recorded(tmp_path):
 # "target<-prereq"。用 ref 是否含 "<-" 来判断一条 REVIEW_REJECTED 记录
 # 到底该计入节点侧还是边侧 —— 这也是本次顺带修的一处 ref 格式（原来边侧
 # 的 REVIEW_REJECTED.ref 只是裸 target_id，和节点侧撞在一起分不清）。
+#
+# 后续修的假阳性（边守恒公式本身的缺陷，而非场景覆盖不足）：
+# UNKNOWN_PREREQUISITE / NON_CANDIDATE_PREREQUISITE 产生于
+# edges.py::propose_all **内部**——被它们拒掉的边从未进入 propose_all
+# 的返回值，因此也从未被写进 04-edges.json。而上面这条边守恒式是
+# "len(04-edges.json) == dependencies 数 + 边相关 DropRecord 数"，
+# 分母（04-edges.json）本就已经不含这两类边，若还把它们的 DropRecord
+# 计进"边相关 DropRecord 数"，等于对同一条边减了两次：一次是它本来就
+# 没出现在分母里，一次是又被当成"从分母掉到 drops 里的那一个"减掉——
+# 公式永远对不上，且是在系统行为完全正确时对不上（真实复现：构造一个
+# 触发 UNKNOWN_PREREQUISITE 的场景，len(04-edges.json)=0，
+# dependencies=0，若把这条 DropRecord 计入边相关 drops 则
+# len(edge_drops)=1，0 == 0 + 1 不成立）。
+#
+# **我的判断**：不选"两级守恒式"（模型原始提议边总数 → propose_all 产出
+# → 最终 dependencies 各自守恒）——因为本测试文件只能拿到 propose_all
+# 的返回值和落盘产物，拿不到"模型这次调用原始吐出了多少条边"这个分母
+# （fake proposer 的返回值在 propose_all 内部就被消费掉，run_pipeline
+# 没有把它透传出来），要做两级式就得改生产代码只为了让测试能读到一个
+# 中间量，不值得。所以选择：把这两个原因码排除在本条跨层不变量之外，
+# 它们的"没有静默跳过"由 propose_all 自己的单元测试覆盖——
+# tests/pipeline/test_edges.py 的
+# test_edges_pointing_at_unknown_drafts_are_dropped（UNKNOWN_PREREQUISITE）
+# 与 test_self_referencing_edge_is_dropped /
+# test_edge_pointing_outside_the_candidate_pool_is_dropped
+# （NON_CANDIDATE_PREREQUISITE）逐条断言：被拒的边不进 edges 返回值、
+# 且必留一条对应原因码的 DropRecord——propose_all 内部本身就是守恒的，
+# 不需要也无法在跨层这一层重复对账。
+# 下面 test_unknown_prerequisite_is_excluded_from_edge_conservation_and_recorded
+# 补一层管道级验证：主动触发 UNKNOWN_PREREQUISITE，确认（1）排除之后
+# 边守恒式在这种场景下不再误报（2）该 DropRecord 没有因为被移出公式
+# 就没人管——dropped.json 里确实记了一条。
 
 _NODE_ONLY_REASONS = {"SAME_NAME_DIFFERENT_TOPIC", "FIDELITY_JUDGE_FAILED", "NAME_JUDGE_FAILED"}
 _EDGE_ONLY_REASONS = {
-    "UNKNOWN_PREREQUISITE",
-    "NON_CANDIDATE_PREREQUISITE",
     "EDGE_TARGET_REJECTED",
     "EDGE_PREREQUISITE_REJECTED",
     "EDGE_JUDGE_FAILED",
@@ -430,6 +460,58 @@ def test_conservation_invariant_holds_across_a_mixed_scenario(tmp_path):
     assert len(drafts) == len(graph["topics"]) + len(merges) + len(node_drops)
 
     # 边守恒：提议边总数（04-edges.json）== 最终 dependencies + 边相关 DropRecord
+    assert len(proposed_edges) == len(graph["dependencies"]) + len(edge_drops)
+
+
+def test_unknown_prerequisite_is_excluded_from_edge_conservation_and_recorded(tmp_path):
+    """主动触发 UNKNOWN_PREREQUISITE，验证上面那条排除决定站得住脚。
+
+    fake edge proposer 引用一个压根不存在的 prerequisite_draft_id ——
+    这条边在 propose_all 内部就被拒，从未进入 04-edges.json（复现审查者
+    的实证：len(04-edges.json)=0）。断言两件事：
+    1. 边守恒式（以 04-edges.json 为基准）在这种场景下仍然成立，不误报；
+    2. 这条 DropRecord 没有因为被移出守恒式就没人管 —— dropped.json 里
+       确实记了一条 UNKNOWN_PREREQUISITE。
+    """
+    source = tmp_path / "source" / "math.md"
+    source.parent.mkdir(parents=True)
+    source.write_text(SOURCE, encoding="utf-8")
+    out = tmp_path / "out"
+
+    deps = _fake_deps()
+
+    def proposer(target, candidates):
+        return ProposedEdgeBatch(
+            edges=[
+                ProposedEdge(
+                    prerequisite_draft_id="ghost-draft-id-does-not-exist",
+                    strength="hard",
+                    reason="编出来的前置",
+                )
+            ]
+        )
+
+    deps.edge_proposer = proposer
+
+    run_pipeline(source.parent, out, deps, model_id="fake", curriculum="c")
+
+    proposed_edges = json.loads((out / "04-edges.json").read_text(encoding="utf-8"))
+    graph = json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    drops = json.loads((out / "dropped.json").read_text(encoding="utf-8"))
+
+    # 复现审查者的实证：那条被拒的边确实没进 04-edges.json
+    assert proposed_edges == []
+    assert graph["dependencies"] == []
+
+    # 断言 2：DropRecord 确实被记录，没有因为移出守恒式就没人管
+    unknown_drops = [d for d in drops if d["reason"] == "UNKNOWN_PREREQUISITE"]
+    assert len(unknown_drops) == 1
+    assert "ghost-draft-id-does-not-exist" in unknown_drops[0]["detail"]
+
+    # 断言 1：边守恒式仍然成立 —— UNKNOWN_PREREQUISITE 已不在 _EDGE_ONLY_REASONS
+    # 里，不会被误计入边相关 drops，公式不会像修复前那样假阳性地 FAIL。
+    edge_drops = [d for d in drops if _is_edge_drop(d)]
+    assert len(edge_drops) == 0
     assert len(proposed_edges) == len(graph["dependencies"]) + len(edge_drops)
 
 
