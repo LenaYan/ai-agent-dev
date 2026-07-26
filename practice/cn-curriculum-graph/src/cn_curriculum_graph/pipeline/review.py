@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from cn_curriculum_graph.judges.deepseek_judge import DEEPSEEK_BASE_URL
 from cn_curriculum_graph.pipeline.models import (
@@ -52,10 +52,10 @@ class EdgeJudge(Protocol):
 class ReviewResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kept: list[TopicDraft] = []
-    kept_edges: dict[str, list[ProposedEdge]] = {}
-    outcomes: list[ReviewOutcome] = []
-    drops: list[DropRecord] = []
+    kept: list[TopicDraft] = Field(default_factory=list)
+    kept_edges: dict[str, list[ProposedEdge]] = Field(default_factory=dict)
+    outcomes: list[ReviewOutcome] = Field(default_factory=list)
+    drops: list[DropRecord] = Field(default_factory=list)
 
 
 _FIDELITY_SYSTEM = (
@@ -151,7 +151,24 @@ def review_drafts(
     name_desc 只有 topic_mismatch 才淘汰；scope_mismatch 是 WARNING 级，
     保留但记进 outcomes——与 validators.consistency 的两级严重性一一对应，
     不能简化成二值。
+
+    **空 judges 列表当场炸**：判定用的是 all(v.approved for v in votes)，
+    而 Python 里 all([]) == True —— 零个判定器会被读成满票通过，与"分歧即
+    淘汰"的设计哲学正好相反。这通常是配置错误（例如构造 PipelineDeps 时
+    忘了传 judges，相关字段又有 default_factory=list，静默就是空列表），
+    不是合法输入，必须 raise 而不是静默放行或警告。
     """
+    if not fidelity_judges:
+        raise ValueError(
+            "fidelity_judges 为空：零个判定器会被 all([]) 读成满票通过，"
+            "这是配置错误（比如忘了传 judges），不是合法输入。"
+        )
+    if not name_judges:
+        raise ValueError(
+            "name_judges 为空：零个判定器会被 all([]) 读成满票通过，"
+            "这是配置错误（比如忘了传 judges），不是合法输入。"
+        )
+
     kept: list[TopicDraft] = []
     outcomes: list[ReviewOutcome] = []
     drops: list[DropRecord] = []
@@ -220,7 +237,16 @@ def review_edges(
     过滤，可能还留着已被淘汰目标的边（Task 4 的教训：预先算好的索引/映射在
     另一份状态被改写后可能失效）。查不到目标时不能让整层崩掉，也不能静默
     丢弃 —— 记一条带原因码的 DropRecord，跳过该目标下的全部边。
+
+    **空 judges 列表当场炸**：同 review_drafts，all([]) == True 会把零个
+    判定器读成满票通过，这是配置错误，不是合法输入。
     """
+    if not edge_judges:
+        raise ValueError(
+            "edge_judges 为空：零个判定器会被 all([]) 读成满票通过，"
+            "这是配置错误（比如忘了传 judges），不是合法输入。"
+        )
+
     kept_edges: dict[str, list[ProposedEdge]] = {}
     outcomes: list[ReviewOutcome] = []
     drops: list[DropRecord] = []

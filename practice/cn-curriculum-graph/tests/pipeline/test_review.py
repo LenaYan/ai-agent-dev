@@ -9,6 +9,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from cn_curriculum_graph.pipeline.models import DraftContent, ProposedEdge, TopicDraft, Vote
 from cn_curriculum_graph.pipeline.review import (
     FIDELITY_TOOL_NAME,
@@ -147,6 +149,35 @@ def test_review_edges_skips_unknown_target_without_crashing():
     assert result.kept_edges == {}
     assert result.drops[0].reason == "UNKNOWN_REVIEW_TARGET"
     assert "ghost" in result.drops[0].detail
+
+
+def test_review_drafts_rejects_empty_fidelity_judges():
+    """空 judges 列表不是合法输入而是配置错误：all([]) == True 会把零信息
+    读成满票通过，与"分歧即淘汰"的设计哲学正好相反，必须当场炸而不是静默放行。"""
+    with pytest.raises(ValueError, match="fidelity_judges"):
+        review_drafts(
+            [_draft()],
+            fidelity_judges=[],
+            name_judges=[_name_judge("consistent")],
+        )
+
+
+def test_review_drafts_rejects_empty_name_judges():
+    with pytest.raises(ValueError, match="name_judges"):
+        review_drafts(
+            [_draft()],
+            fidelity_judges=[_fidelity(True)],
+            name_judges=[],
+        )
+
+
+def test_review_edges_rejects_empty_edge_judges():
+    edges = {
+        "a": [ProposedEdge(prerequisite_draft_id="good", strength="hard", reason="站得住")],
+    }
+
+    with pytest.raises(ValueError, match="edge_judges"):
+        review_edges({"a": _draft("a")}, edges, edge_judges=[])
 
 
 def _fake_client(recorder: dict, tool_input: dict):
