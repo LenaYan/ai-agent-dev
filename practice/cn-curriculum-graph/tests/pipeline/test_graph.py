@@ -115,6 +115,54 @@ def test_node_timeout_actually_fires_for_blocking_node_body(tmp_path, monkeypatc
     assert "run timeout of 1.000s" in str(exc_info.value)
 
 
+def test_node_timeout_does_not_provide_a_wall_clock_bound(tmp_path, monkeypatch):
+    """第一部分遗留项回归：NODE_TIMEOUT 的文档曾经写"这意味着'流水线不再
+    永远挂着'"——这句话是错的，实测钉住。
+
+    根因（CPython `asyncio.runners.Runner.close()`）：`asyncio.to_thread`
+    用的是 default executor，收尾阶段会
+    `run_until_complete(loop.shutdown_default_executor(THREAD_JOIN_TIMEOUT))`
+    （`THREAD_JOIN_TIMEOUT = 300`），也就是说会去 join 那条杀不掉的后台线程，
+    最多等 300 秒——`timeout` 参数改变的只是"返回结果"（拿到异常而非正常
+    返回值），不是墙钟上界。
+
+    复现：sleep=3s（不能杀掉）、NODE_TIMEOUT=1s。`NodeTimeoutError` 如期在
+    约 1s 抛出，但 `run_pipeline_lg` 实际耗时接近 3s（而非 1s）才真正返回——
+    墙钟被 THREAD_JOIN_TIMEOUT 机制拖到了线程自然结束。
+    """
+    monkeypatch.setattr(graph_mod, "NODE_TIMEOUT", timedelta(seconds=1))
+    monkeypatch.setattr(graph_mod, "RETRY_POLICY", RetryPolicy(max_attempts=1, retry_on=retry_on))
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "m.md").write_text("3.1.1 甲。\n", encoding="utf-8")
+
+    real_extract_all = extract_mod.extract_all
+    sleep_seconds = 3
+
+    def blocking_extract_all(chunks, extractor):
+        time.sleep(sleep_seconds)
+        return real_extract_all(chunks, extractor)
+
+    monkeypatch.setattr(graph_mod.extract_mod, "extract_all", blocking_extract_all)
+
+    started = time.monotonic()
+    with pytest.raises(NodeTimeoutError):
+        run_pipeline_lg(
+            source, tmp_path / "out", _fake_deps(), model_id="fake", curriculum="c"
+        )
+    elapsed = time.monotonic() - started
+
+    # 核心断言：run_pipeline_lg 的实际墙钟耗时接近 sleep_seconds（后台线程
+    # 自然结束所需时间），而非接近 NODE_TIMEOUT（1s）——如果 timeout 真的
+    # 提供了墙钟上界，elapsed 应该远小于 sleep_seconds，这条断言就会 FAIL。
+    assert elapsed >= sleep_seconds * 0.9, (
+        f"预期 run_pipeline_lg 仍阻塞到后台线程自然结束（约 {sleep_seconds}s），"
+        f"实际只用了 {elapsed:.2f}s 就返回了——如果这条断言意外 FAIL，说明 "
+        "NODE_TIMEOUT 确实提供了墙钟上界，本条注释与 graph.py 里的文档都要反过来改"
+    )
+
+
 def test_programming_errors_is_imported_from_models_not_duplicated():
     """S4：graph.py 曾经维护一份与 pipeline/models.py 字面相同的
     PROGRAMMING_ERRORS 拷贝——今天内容相同不代表以后也同步：往权威定义

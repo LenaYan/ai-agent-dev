@@ -157,11 +157,23 @@ RETRY_POLICY = RetryPolicy(max_attempts=3, retry_on=retry_on)
 # 修复：四个 Node 内部对六层函数的调用改成 `await asyncio.to_thread(...)`，
 # 把阻塞调用扔进线程池，事件循环空出来才能真正调度看门狗。
 #
-# **代价（不是"资源被真正回收"）**：`asyncio.to_thread` 起的线程杀不掉。
-# 超时只能让编排层放弃等待、把 NodeTimeoutError 抛给调用方，那条后台线程
-# 和它底下仍在跑的 HTTP 请求会继续跑到自然结束（或被 anthropic SDK 自己的
-# 客户端超时打断），只是编排层不再等它、也不再理会它的返回值。这意味着
-# "流水线不再永远挂着"，但不意味着底层资源被真正取消。
+# **代价（第一部分遗留项回归修正——这句话曾经写错，已用实测推翻）**：
+# 早先这里写的是"这意味着'流水线不再永远挂着'，但不意味着底层资源被真正
+# 取消"——前半句不成立，已用真实阻塞函数体 + 1 秒 timeout 实测推翻（见
+# `test_node_timeout_does_not_provide_a_wall_clock_bound`）：sleep=3s、
+# NODE_TIMEOUT=1s，`NodeTimeoutError` 如期在约 1s 抛出，但
+# `run_pipeline_lg` **实际返回耗时接近 3s**，不是 1s。
+#
+# 根因在 CPython 的 `asyncio.runners.Runner.close()`：它会
+# `run_until_complete(loop.shutdown_default_executor(THREAD_JOIN_TIMEOUT))`
+# （`THREAD_JOIN_TIMEOUT = 300`），而 `asyncio.to_thread` 用的正是 default
+# executor——`asyncio.run` 收尾时会去 join 那条杀不掉的后台线程，最多等
+# 300 秒。也就是说：**`timeout` 改变的是返回结果（拿到 `NodeTimeoutError`
+# 而不是正常返回值），不提供墙钟上界**。`run_pipeline_lg` 仍会阻塞到
+# 底层调用自然结束、或 `asyncio.run` 的 300s executor join 上限——两者
+# 谁先到就到谁，不是 `NODE_TIMEOUT` 那个数字。真实场景下（例如 10 分钟
+# timeout + 一个卡死的 HTTP 请求），`run_pipeline_lg` 会在超时后再阻塞
+# 最多 5 分钟才真正返回。
 NODE_TIMEOUT = timedelta(minutes=10)
 
 
