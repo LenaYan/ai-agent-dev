@@ -135,6 +135,102 @@ def test_same_name_same_grade_but_different_topic_drops_the_later_one():
     assert result.drops[0].ref == "b-2"
 
 
+def test_three_same_name_drafts_all_different_grades_all_get_qualifiers():
+    """三个同名草稿年级互不相同 —— 全部加限定词区分，无一被丢弃。"""
+    a = _draft("a-1", "认识角", grade=4)
+    b = _draft("b-2", "认识角", grade=7)
+    c = _draft("c-3", "认识角", grade=6)
+
+    result = dedupe([a, b, c], _judge(set()))  # 所有对都判为不同
+
+    names = sorted(d.content.name for d in result.kept)
+    assert names == ["认识角（4年级）", "认识角（6年级）", "认识角（7年级）"]
+    assert result.drops == []
+
+
+def test_three_same_name_drafts_two_share_a_grade():
+    """三个同名，其中两个同年级 —— 同年级里留 draft_id 小者、丢另一个并记账；
+    第三个不同年级的加限定词保留。
+
+    这正是评审者实测出的「三方同名裸名逃逸」缺陷复现用例：candidate_pairs
+    产出 (0,1)(0,2)(1,2)，旧实现处理完 (0,1) 后 a-1/b-2 都已改名，轮到 (0,2) 时
+    归一化名不再相等就直接放过，导致 c-3 带着裸名「认识角」逃逸、drops 为空。
+    """
+    a = _draft("a-1", "认识角", grade=4)
+    b = _draft("b-2", "认识角", grade=7)
+    c = _draft("c-3", "认识角", grade=4)
+
+    result = dedupe([a, b, c], _judge(set()))
+
+    kept_ids = {d.draft_id for d in result.kept}
+    assert kept_ids == {"a-1", "b-2"}
+    assert "c-3" not in kept_ids  # 旧实现里这是逃逸的裸名节点
+
+    names = {d.draft_id: d.content.name for d in result.kept}
+    assert names == {"a-1": "认识角（4年级）", "b-2": "认识角（7年级）"}
+
+    assert len(result.drops) == 1
+    assert result.drops[0].reason == "SAME_NAME_DIFFERENT_TOPIC"
+    assert result.drops[0].ref == "c-3"
+
+
+def test_four_same_name_drafts_two_pairs_share_grades():
+    """四个同名，两两同年级（4/4/7/7）—— 每对各留 draft_id 最小者，其余丢弃记账。"""
+    a = _draft("a-1", "认识角", grade=4)
+    b = _draft("b-2", "认识角", grade=4)
+    c = _draft("c-3", "认识角", grade=7)
+    d = _draft("d-4", "认识角", grade=7)
+
+    result = dedupe([a, b, c, d], _judge(set()))
+
+    kept_ids = {x.draft_id for x in result.kept}
+    assert kept_ids == {"a-1", "c-3"}
+
+    names = {x.draft_id: x.content.name for x in result.kept}
+    assert names == {"a-1": "认识角（4年级）", "c-3": "认识角（7年级）"}
+
+    dropped_ids = {rec.ref for rec in result.drops}
+    assert dropped_ids == {"b-2", "d-4"}
+    assert all(rec.reason == "SAME_NAME_DIFFERENT_TOPIC" for rec in result.drops)
+
+
+def test_judge_exception_records_a_drop_and_lets_other_pairs_proceed():
+    """一对 judge 调用抛异常 —— 该对不合并（两个都保留），记 SAME_TOPIC_JUDGE_FAILED，
+    其余候选对照常处理，不因一次异常中断整批（设计文档 §6 的批处理容错要求，
+    对齐 extract.py 的 EXTRACT_FAILED 模式）。
+
+    用共享 standard_code 强制配对，而非同名，避免和阶段二的同名消歧逻辑产生干扰。
+    """
+    flaky_left = _draft("a-1", "甲概念")
+    flaky_right = _draft("b-2", "完全不同的乙")
+    flaky_right.standard_codes = list(flaky_left.standard_codes)  # 强制配对
+
+    merge_left = _draft("c-3", "小数的意义")
+    merge_right = _draft("d-4", "小数的意义")
+
+    def flaky_judge(x: TopicDraft, y: TopicDraft) -> SameTopicVerdict:
+        key = frozenset({x.draft_id, y.draft_id})
+        if key == frozenset({"a-1", "b-2"}):
+            raise RuntimeError("judge 服务超时")
+        return SameTopicVerdict(same=True, reason="确实是同一个")
+
+    result = dedupe([flaky_left, flaky_right, merge_left, merge_right], flaky_judge)
+
+    # 异常那对：不合并，两个都保留
+    kept_ids = {d.draft_id for d in result.kept}
+    assert {"a-1", "b-2"}.issubset(kept_ids)
+
+    # 其余候选对不受影响，照常合并
+    assert len(result.merges) == 1
+    assert result.merges[0].kept_draft_id in {"c-3", "d-4"}
+
+    # 异常有对应记账
+    judge_fail_drops = [d for d in result.drops if d.reason == "SAME_TOPIC_JUDGE_FAILED"]
+    assert len(judge_fail_drops) == 1
+    assert judge_fail_drops[0].ref in {"a-1", "b-2"}
+    assert "RuntimeError" in judge_fail_drops[0].detail
+
+
 def test_unrelated_drafts_pass_through_untouched():
     drafts = [_draft("a-1", "小数的意义"), _draft("b-2", "三角形内角和")]
 

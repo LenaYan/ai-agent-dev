@@ -152,6 +152,90 @@ def _merge_into(base: TopicDraft, other: TopicDraft) -> TopicDraft:
     return merged
 
 
+_MAX_DEDUP_ROUNDS = 10
+
+
+def _group_survivors_by_name(
+    by_id: dict[str, TopicDraft], order: list[str], dropped: set[str]
+) -> dict[str, list[str]]:
+    """按当前（可能已带年级限定词的）归一化名给未丢弃的草稿分组。"""
+    groups: dict[str, list[str]] = {}
+    for draft_id in order:
+        if draft_id in dropped:
+            continue
+        key = normalize_name(by_id[draft_id].content.name)
+        groups.setdefault(key, []).append(draft_id)
+    return groups
+
+
+def _resolve_same_name_conflicts(
+    by_id: dict[str, TopicDraft],
+    order: list[str],
+    dropped: set[str],
+    drops: list[DropRecord],
+) -> None:
+    """阶段二：纯规则消歧，作用于阶段一幸存者。
+
+    安全前提：归一化名相同的草稿必然会被 candidate_pairs 的第一条规则配成候选对，
+    所以阶段一必定已对它们调用过 judge —— 走到这里的同名幸存者，一定是被判为
+    "不同" 才没被合并掉的，规则消歧不会误伤应合并的。
+
+    加了限定词的名字可能与第三方的原名再次撞上，所以要反复分组直到收敛；
+    设轮数上限防止病态输入下死循环。
+    """
+    for _round in range(_MAX_DEDUP_ROUNDS):
+        groups = _group_survivors_by_name(by_id, order, dropped)
+        conflicts = [ids for ids in groups.values() if len(ids) > 1]
+        if not conflicts:
+            return
+
+        for ids in conflicts:
+            by_grade: dict[int, list[str]] = {}
+            for draft_id in ids:
+                by_grade.setdefault(by_id[draft_id].content.grade_start, []).append(draft_id)
+
+            if len(by_grade) == len(ids):
+                # 组内各成员年级互不相同 —— 都加年级限定词区分
+                for draft_id in ids:
+                    draft = by_id[draft_id]
+                    draft.content.name = f"{draft.content.name}（{draft.content.grade_start}年级）"
+            else:
+                # 有同年级的 —— 同年级子组里留 draft_id 字典序最小者，其余丢弃记账；
+                # 年级不撞车的成员本轮不动，下一轮重新分组时会落入上面的分支
+                for grade_ids in by_grade.values():
+                    if len(grade_ids) <= 1:
+                        continue
+                    grade_ids_sorted = sorted(grade_ids)
+                    keep_id = grade_ids_sorted[0]
+                    for drop_id in grade_ids_sorted[1:]:
+                        dropped.add(drop_id)
+                        drops.append(
+                            DropRecord(
+                                stage="dedupe",
+                                ref=drop_id,
+                                reason="SAME_NAME_DIFFERENT_TOPIC",
+                                detail=f"与 {keep_id} 同名同年级但判为不同知识点",
+                            )
+                        )
+
+    # 达到轮数上限仍未收敛 —— 绝不静默放过：保留字典序最小者，其余丢弃记账
+    for ids in _group_survivors_by_name(by_id, order, dropped).values():
+        if len(ids) <= 1:
+            continue
+        ids_sorted = sorted(ids)
+        keep_id = ids_sorted[0]
+        for drop_id in ids_sorted[1:]:
+            dropped.add(drop_id)
+            drops.append(
+                DropRecord(
+                    stage="dedupe",
+                    ref=drop_id,
+                    reason="SAME_NAME_DIFFERENT_TOPIC",
+                    detail=f"同名消歧达到 {_MAX_DEDUP_ROUNDS} 轮上限仍与 {keep_id} 撞名，人工介入",
+                )
+            )
+
+
 def dedupe(drafts: list[TopicDraft], judge: SameTopicJudge) -> DedupeResult:
     by_id = {d.draft_id: d.model_copy(deep=True) for d in drafts}
     order = [d.draft_id for d in drafts]
@@ -159,43 +243,47 @@ def dedupe(drafts: list[TopicDraft], judge: SameTopicJudge) -> DedupeResult:
     drops: list[DropRecord] = []
     dropped: set[str] = set()
 
+    # 阶段一：只做 LLM 判定与合并。同名消歧不在这个循环里做 ——
+    # candidate_pairs 是基于原始 drafts 预先算好的索引对，若在循环内就地
+    # 改写名字/丢弃，处理到第三个及以后的候选对时读到的就是"部分改写过"的
+    # 状态，会导致同名判断被绕过（三个以上同名草稿时最后一个带着裸名逃逸）。
     for i, j in candidate_pairs(drafts):
         left_id, right_id = order[i], order[j]
         if left_id in dropped or right_id in dropped:
             continue
 
-        verdict = judge(by_id[left_id], by_id[right_id])
-        if verdict.same:
-            base, other = _better_base(by_id[left_id], by_id[right_id])
-            by_id[base.draft_id] = _merge_into(base, other)
-            dropped.add(other.draft_id)
-            merges.append(
-                Merge(
-                    kept_draft_id=base.draft_id,
-                    dropped_draft_id=other.draft_id,
-                    reason=verdict.reason,
+        try:
+            verdict = judge(by_id[left_id], by_id[right_id])
+        except Exception as exc:  # noqa: BLE001 —— 单对失败不能中断整批
+            drops.append(
+                DropRecord(
+                    stage="dedupe",
+                    ref=left_id,
+                    reason="SAME_TOPIC_JUDGE_FAILED",
+                    detail=(
+                        f"{type(exc).__name__}: {exc}"
+                        f"（与 {right_id} 配对判定失败，两者均保留未合并）"
+                    ),
                 )
             )
             continue
 
-        # 判为不同，但名字撞了 —— 不许共存，先试年级限定词
-        left, right = by_id[left_id], by_id[right_id]
-        if normalize_name(left.content.name) != normalize_name(right.content.name):
+        if not verdict.same:
             continue
-        if left.content.grade_start != right.content.grade_start:
-            for draft in (left, right):
-                draft.content.name = f"{draft.content.name}（{draft.content.grade_start}年级）"
-            continue
-        # 加了年级还撞名 —— 自动区分不了，丢后者交给人看
-        dropped.add(right_id)
-        drops.append(
-            DropRecord(
-                stage="dedupe",
-                ref=right_id,
-                reason="SAME_NAME_DIFFERENT_TOPIC",
-                detail=f"与 {left_id} 同名同年级但判为不同知识点：{verdict.reason}",
+
+        base, other = _better_base(by_id[left_id], by_id[right_id])
+        by_id[base.draft_id] = _merge_into(base, other)
+        dropped.add(other.draft_id)
+        merges.append(
+            Merge(
+                kept_draft_id=base.draft_id,
+                dropped_draft_id=other.draft_id,
+                reason=verdict.reason,
             )
         )
+
+    # 阶段二：纯规则消歧，只对阶段一的幸存者按当前名字重新分组处理
+    _resolve_same_name_conflicts(by_id, order, dropped, drops)
 
     kept = [by_id[i] for i in order if i not in dropped]
     return DedupeResult(kept=kept, merges=merges, drops=drops)
