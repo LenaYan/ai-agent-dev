@@ -11,6 +11,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from cn_curriculum_graph.cli import format_report
 from cn_curriculum_graph.judges.deepseek_judge import DeepSeekJudge
 from cn_curriculum_graph.pipeline import assemble as assemble_mod
 from cn_curriculum_graph.pipeline import chunk as chunk_mod
@@ -21,7 +22,7 @@ from cn_curriculum_graph.pipeline import io
 from cn_curriculum_graph.pipeline import review as review_mod
 from cn_curriculum_graph.pipeline.models import Chunk, TargetedEdge, TopicDraft
 from cn_curriculum_graph.runner import has_errors, run_all
-from cn_curriculum_graph.validators.base import Finding
+from cn_curriculum_graph.validators.base import Finding, Severity
 
 DEFAULT_CURRICULUM = "cn-moe-math-2022"
 STAGES = ("chunk", "extract", "dedupe", "edges", "review", "assemble")
@@ -123,7 +124,35 @@ def run_pipeline(
     (out_dir / "graph.json").write_text(
         graph.model_dump_json(indent=2, exclude_none=False) + "\n", encoding="utf-8"
     )
-    return run_all(graph)
+    findings = run_all(graph)
+
+    # 空产出兜底：这条检查刻意放在 run_pipeline 而不是校验层。
+    # 校验层（validators/coverage.py 等）的职责是"校验一份已有的图"，
+    # 空图对它是合法输入，没有规则可违反，因此各校验器面对空图都会
+    # early-return（如 check_standards_coverage 的 `if not graph.topics:
+    # return []`）——这本身没错。但"生成流水线跑出一份空图"是生成
+    # 流水线自己的失败语义：本该产出知识点，结果一个没剩，这不是
+    # "无话可说"，是彻头彻尾的失败。把这条检查塞进校验层会污染它
+    # "只校验已有图"的单一职责，所以放在这里，由 run_pipeline 自己兜底。
+    if not graph.topics:
+        findings.append(
+            Finding(
+                code="EMPTY_GENERATION",
+                severity=Severity.ERROR,
+                message=(
+                    "本次生成没有产出任何知识点节点 —— 请查看 "
+                    f"{drops_path} 定位是哪一层把输入全部丢弃了"
+                ),
+                context={
+                    "chunks": len(chunks),
+                    "drafts": len(drafts),
+                    "deduped": len(deduped.kept),
+                    "reviewed": len(draft_review.kept),
+                },
+            )
+        )
+
+    return findings
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -151,8 +180,6 @@ def main(argv: list[str] | None = None) -> int:
         model_id=models[0],
         curriculum=args.curriculum,
     )
-
-    from cn_curriculum_graph.cli import format_report
 
     print(format_report(findings))
     return 1 if has_errors(findings) else 0

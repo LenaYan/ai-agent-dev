@@ -15,6 +15,7 @@ from cn_curriculum_graph.pipeline.models import (
 )
 from cn_curriculum_graph.pipeline.run import PipelineDeps, run_pipeline
 from cn_curriculum_graph.runner import has_errors
+from cn_curriculum_graph.validators.base import Severity
 from cn_curriculum_graph.validators.consistency import Verdict
 
 SOURCE = """3.1.1 能认识并读写 100 以内的数。
@@ -130,3 +131,49 @@ def test_dropped_records_accumulate_across_stages(tmp_path):
 
     drops = json.loads((out / "dropped.json").read_text(encoding="utf-8"))
     assert any(d["reason"] == "NO_STANDARD_CODE" for d in drops)
+
+
+def test_all_drafts_rejected_by_review_yields_empty_generation_error(tmp_path):
+    """一次生成如果被 review 淘汰得一个节点都不剩，退出码不能装作没事。
+
+    校验层（coverage.py 的 check_standards_coverage 等）面对空图会 early-return
+    "无话可说" —— 那是校验层的合理语义（校验一份已有的图，空图确实没有校验规则
+    可违反）。但"生成流水线跑出空图"是生成流水线自己的失败语义，得由 run_pipeline
+    自己在 assemble 之后兜底，不能让空产出静默拿到 0 error。
+    """
+    source = tmp_path / "source" / "math.md"
+    source.parent.mkdir(parents=True)
+    source.write_text(SOURCE, encoding="utf-8")
+    out = tmp_path / "out"
+
+    deps = _fake_deps()
+    deps.fidelity_judges = [
+        lambda d: Vote(reviewer="fake", approved=False, reason="全部否决")
+    ]
+
+    findings = run_pipeline(
+        source.parent, out, deps, model_id="fake", curriculum="cn-moe-math-2022"
+    )
+
+    assert has_errors(findings)
+    empty_findings = [f for f in findings if f.code == "EMPTY_GENERATION"]
+    assert len(empty_findings) == 1
+    finding = empty_findings[0]
+    assert finding.severity is Severity.ERROR
+    # context 要带够诊断信息，让人不用重新跑一遍就能定位是哪一层归零的
+    for key in ("chunks", "drafts", "deduped", "reviewed"):
+        assert key in finding.context
+
+
+def test_normal_generation_does_not_emit_empty_generation_finding(tmp_path):
+    """防误报：正常产出时不该背上 EMPTY_GENERATION。"""
+    source = tmp_path / "source" / "math.md"
+    source.parent.mkdir(parents=True)
+    source.write_text(SOURCE, encoding="utf-8")
+    out = tmp_path / "out"
+
+    findings = run_pipeline(
+        source.parent, out, _fake_deps(), model_id="fake", curriculum="cn-moe-math-2022"
+    )
+
+    assert not any(f.code == "EMPTY_GENERATION" for f in findings)
