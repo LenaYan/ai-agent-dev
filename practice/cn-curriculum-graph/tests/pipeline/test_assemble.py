@@ -112,3 +112,28 @@ def test_edge_referencing_unknown_prerequisite_draft_raises():
 
     with pytest.raises(ValueError, match="未知的 draft id"):
         assemble([known], edges, model_id="m", curriculum="c")
+
+
+# --- 审查发现：provenance 曾在循环外构造一次，所有 topic 共享同一个对象引用。
+# models.py 模块 docstring 把"每节点独立记录生成方式与审核状态"列为本项目
+# 相对 Marble 的刻意差异之一，而 ReviewStatus 预留了 self_reviewed /
+# expert_reviewed，意味着将来要逐节点写回审核结果 —— pydantic 模型默认可变，
+# 共享引用会让改一个节点的 review_status 静默污染全部节点。
+
+
+def test_each_topic_gets_its_own_provenance_object():
+    """每个 topic 的 provenance 必须是独立对象，不能共享同一个引用。"""
+    graph = assemble(
+        [_draft("a", "小数的意义"), _draft("b", "认识角", grade=5)],
+        {},
+        model_id="deepseek-v4-flash",
+        curriculum="cn-moe-math-2022",
+    )
+
+    first, second = graph.topics[0].provenance, graph.topics[1].provenance
+    assert first is not second
+
+    for prov in (first, second):
+        assert prov.method == "llm-extract/deepseek-v4-flash"
+        assert prov.review_status == "unreviewed"
+        assert prov.confidence == 0.0

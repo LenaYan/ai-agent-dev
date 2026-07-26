@@ -38,14 +38,6 @@ def assemble(
     review_edges 本身只会再收窄，不会新增引用。若这个前置条件被违反，
     说明调用方状态不同步，直接报错而非静默丢边（见下方两处检查）。
     """
-    provenance = Provenance(
-        method=f"llm-extract/{model_id}",
-        review_status="unreviewed",
-        # 没有任何教研审核，非零置信度都是自欺。投票结果单独记进
-        # review-log.json —— 模型间的一致程度和教研正确性是两件事。
-        confidence=0.0,
-    )
-
     topic_id_by_draft: dict[str, str] = {}
     # 碰撞检查专用集合：用 set 做 O(1) 成员测试，而不是每次现算
     # `dict.values()`（O(n) 线性扫描）—— 原实现在 n 个 draft 上是 O(n²)。
@@ -74,7 +66,18 @@ def assemble(
                 assessment_prompt=draft.content.assessment_prompt,
                 misconceptions=draft.content.misconceptions,
                 standards=[Standard(curriculum=curriculum, code=c) for c in draft.standard_codes],
-                provenance=provenance,
+                # 每个 topic 独立构造一份 Provenance，不能挪到循环外共享同一个
+                # 对象引用 —— pydantic 模型默认可变，届时逐节点写回审核结果
+                # （ReviewStatus 预留了 self_reviewed / expert_reviewed）会静默
+                # 污染全部节点，正好毁掉"每节点独立记录生成方式与审核状态"这个
+                # 本项目相对 Marble 的刻意差异点（见 models.py 模块 docstring）。
+                provenance=Provenance(
+                    method=f"llm-extract/{model_id}",
+                    review_status="unreviewed",
+                    # 没有任何教研审核，非零置信度都是自欺。投票结果单独记进
+                    # review-log.json —— 模型间的一致程度和教研正确性是两件事。
+                    confidence=0.0,
+                ),
             )
         )
 
