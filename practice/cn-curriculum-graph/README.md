@@ -18,7 +18,7 @@
 
 ```bash
 uv sync
-uv run pytest                        # 55 个测试
+uv run pytest                        # 58 个测试
 uv run ccg-validate data/example-graph.json  # 校验一份图数据（默认跳过语义一致性，留 CONSISTENCY_SKIPPED 警告）
 
 uv run python scripts/export_schema.py   # 重新导出 JSON Schema
@@ -36,7 +36,7 @@ uv run ccg-validate data/example-graph.json --judge anthropic
 uv run ccg-validate data/example-graph.json --judge deepseek --model deepseek-v4-pro   # 升级档
 
 # 先量 judge 判得准不准，再决定用哪个（对 ground truth 跑准确率/查准/查全）：
-uv run python scripts/eval_judge.py --judge deepseek
+uv run python scripts/eval_judge.py --judge deepseek   # 16 条 ground truth，三档混淆矩阵
 ```
 
 > ⚠️ **绝不要 `export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic`**（DeepSeek 官方文档教的就是这招）。
@@ -80,7 +80,8 @@ adapters/marble.py   仅用于把校验层跑在真实数据上，不引入其�
 | `REVISIT_NOT_ADVANCING` | error | 螺旋边没指向更高年级 = 接反了 |
 | `LOW_STANDARDS_COVERAGE` | error | 宣称"对齐课标"必须能被卡住 |
 | `MISSING_PROVENANCE` | error | 无法判断某条数据可不可信 |
-| `NAME_DESC_MISMATCH` | error | 名实不符，纯规则查不出 |
+| `NAME_DESC_MISMATCH` | error | 名称与描述讲的是不同知识点，纯规则查不出 |
+| `NAME_DESC_SCOPE_MISMATCH` | warning | 同一主题但名称罩不住描述的范围 —— 命名质量问题，不该让 CI 红 |
 | `CONSISTENCY_SKIPPED` | warning | 显式声明哪项没跑，不静默略过 |
 
 ## 相对 Marble 的四处刻意差异
@@ -119,30 +120,37 @@ adapters/marble.py   仅用于把校验层跑在真实数据上，不引入其�
 
 ## judge 实测（2026-07-26，deepseek-v4-flash）
 
-对 8 条 ground truth：**准确率 100%**（TP=3 FN=0 FP=0 TN=5），8 次调用约 11 秒。
+### 判定标准为什么是三档
 
-但 8 条手写样本太干净。抽 Marble 真实节点 124 个（含 3 个已知名实不符）跑一遍，
-8 并发约 22 秒、0 次调用失败，结果更有信息量：
+初版是 `consistent: bool`，对 8 条手写 ground truth 拿了 100%。但抽 124 个 Marble
+真实节点一跑，11 条判为不符里有 6 条既不是"讲同一件事"也不是"讲不同知识点" ——
+名称与描述**同属一个主题、覆盖范围对不上**（`Deep-Sea Survival` 的描述扩到了
+木蛙和水熊虫）。手写样本全是"乘法 vs 除法"这种泾渭分明的，压根没覆盖这一类。
+
+一起判 ERROR 会让 CI 被"名字起窄了"的节点刷红，静默放过又漏掉真实的命名问题，
+所以拆成 `topic_mismatch`(ERROR) / `scope_mismatch`(WARNING) / `consistent` 三档，
+ground truth 扩到 16 条（含那 6 个边界案例 + 1 条初版误判的对抗样本）。
+
+改完对 16 条 ground truth：**每一档查准查全都是 100%**。
+
+### 全量 1590 节点
+
+10 并发，205 秒，**0 次调用失败**，约 $0.08：
 
 ```
-判为名实不符 11/124（≈9%）
-  ✓ 3 个已知案例全部抓到
-  ✓ 2 个新的真实缺陷：
-      Decimal place value          → 描述在讲计量单位换算
-      Telling time to the minute   → 描述只要求精确到「五分钟」
-  ? 6 个属于「范围不匹配」而非「讲的不是一回事」：
-      Deep-Sea Survival            → 描述扩到南极鱼/木蛙/水熊虫等各类极端环境
-      Earthquake-Resistant Design  → 描述含海啸预警、社区疏散演练
-      Crime & Punishment           → 描述特指中世纪英国司法
-      Volcanoes & Mass Extinctions / Roman numerals to 100 / Testing Push & Pull Designs
+consistent        1454   91.4%
+scope_mismatch     108    6.8%   → WARNING
+topic_mismatch      28    1.8%   → ERROR
 ```
 
-**这暴露了一个提示词层面的定义缺口**：ground truth 里的"名实不符"指*讲的是不同知识点*，
-而模型把*名称与描述覆盖范围不一致*也归进去了。8 条干净样本测不出这个歧义，
-真实数据一跑就现形 —— 又一次印证"跑真实数据是最好的测试"。
+28 条 ERROR 抽看全是真问题：`Number bonds to 9` 的描述在讲凑十、`Tenths` 的描述
+在讲百分位、`Types of angles` 的描述在讲勾股定理、`Measuring length` 的描述在讲体积。
 
-按 9% 外推，全量 1590 节点约 140 条 `NAME_DESC_MISMATCH`。**在把"范围不匹配算不算"
-这条语义定死之前，这个数字不能当结论用。**
+**而且 86%（24/28）的 ERROR 落在跨年龄段复用的同名节点上** —— `Understanding angles`
+一名七用，其中 4 个的描述分别在讲长方形面积、四边形分类、尺规作图、长方形性质。
+这不是随机噪声，是他们生成流水线的结构性缺陷：名称被当成"主题族标签"复用，
+而描述来自各年龄段的具体课标条目，两者逐级漂移。**同名节点是这类数据集的高危区**，
+本项目的生成流水线要专门防这一手。
 
 注：`mt_H6LlpWgEYS` 被判为一致是**正确**的 —— 它的问题在 description 与
 assessmentPrompt 之间，不在 name 与 description 之间，因此刻意没进 ground truth。
@@ -160,6 +168,10 @@ assessmentPrompt 之间，不在 name 与 description 之间，因此刻意没�
 - **judge 多样性要来自模型，不能来自提示词。** 两个 judge 共用 `judges/prompt.py`
   同一份系统提示 —— 否则分歧分不清是"模型看法不同"还是"问题问得不一样"，
   将来的投票机制就没意义了。
+- **判定的档位数是产品决策，不是工程细节。** 二值 judge 在干净样本上 100%，
+  一上真实数据就暴露出第三类情形。档位不够时模型不会告诉你"没有合适的选项"，
+  它会硬塞进现有的某一档 —— 于是 ERROR 里混进一堆本该是 WARNING 的东西。
+  **ground truth 的样本分布决定了你能发现什么**：全是极端案例就测不出边界在哪。
 - **"跳过"必须留痕。** 不传 judge 时产出 `CONSISTENCY_SKIPPED` 警告而非静默通过 ——
   否则"CI 绿了"会被读成"全都查过了"，这正是 Marble 让人误判其数据质量的方式。
 - **跑真实数据是最好的测试。** 单测全绿之后跑 Marble，当场暴露两个 bug：
@@ -172,8 +184,8 @@ assessmentPrompt 之间，不在 name 与 description 之间，因此刻意没�
    `judges/anthropic_judge.py`（原生结构化输出）+ `judges/deepseek_judge.py`（强制工具调用）
 2. ✅ ~~用真 key 量 judge 准不准~~ —— deepseek-v4-flash 对 ground truth 8/8，
    Marble 抽样 124 个 0 失败
-3. **定死"范围不匹配算不算名实不符"**，把上面那 6 个边界案例补进 ground truth，
-   按结论调 `judges/prompt.py` —— 这是本项目第一次需要*产品语义*决策而非工程决策
+3. ✅ ~~定死"范围不匹配算不算名实不符"~~ —— 拆成三档判定 / 两级严重性，
+   ground truth 扩到 16 条，全量 1590 节点跑出 28 ERROR + 108 WARNING
 4. 生成流水线（多 agent 抽取 + 交叉审核），产出第一批「数与代数」节点 ——
    其"交叉审核"层复用这套 judge + ground truth 基建，且 Anthropic/DeepSeek
    两个不同训练谱系的 judge 正好当独立投票者（同族模型误判高度相关，投票会失效）

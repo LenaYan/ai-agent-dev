@@ -15,7 +15,7 @@ def clean_topic(tid: str, **kw):
 
 
 def judge_ok(name: str, description: str) -> Verdict:
-    return Verdict(consistent=True, reason="")
+    return Verdict(judgment="consistent", reason="")
 
 
 def test_clean_graph_yields_no_findings():

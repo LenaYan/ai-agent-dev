@@ -1,60 +1,116 @@
 {
-  "_note": "judge 评测的 ground truth。前 3 条是从 Marble os-taxonomy 手工核对出的真实名实不符节点（描述为其实际内容的忠实重述，非逐字原文）；后 5 条是手写的明显一致案例（含中英、中英混排）。expected_consistent=false 视为『正类=名实不符』，用于算 precision/recall。要跑真实 Marble 数据，把 topics.json 的 name/description 灌进同样结构即可。",
+  "_note": "judge 评测的 ground truth。expected_judgment 取值 consistent / scope_mismatch / topic_mismatch，对应 CI 里的 无 / WARNING / ERROR。来自 Marble os-taxonomy 的案例其描述是**忠实重述而非逐字原文**（其内容许可为 CC BY-SA 4.0，此处不做再分发）。前 3 条 topic_mismatch 是最初手工核对出来的；其余 Marble 案例来自 2026-07-26 对 124 个真实节点的抽样跑，是判定标准从二值扩到三值的直接原因。",
   "cases": [
     {
       "id": "mt_MCu_SNg_OW",
       "name": "Arrays for multiplication",
       "description": "Divide a four-digit number by a one-digit number using the short division algorithm.",
-      "expected_consistent": false,
-      "note": "名说乘法阵列，描述在讲短除法"
+      "expected_judgment": "topic_mismatch",
+      "note": "名说乘法阵列，描述在讲短除法 —— 乘法 vs 除法，不同知识点"
     },
     {
       "id": "mt_GzcJEVkNRn",
       "name": "Understanding angles",
       "description": "Find the area of a rectangle by multiplying its side lengths.",
-      "expected_consistent": false,
+      "expected_judgment": "topic_mismatch",
       "note": "名说认识角，描述在求长方形面积"
     },
     {
       "id": "mt_Xt1cRqaBOW",
       "name": "Understanding angles",
       "description": "Classify quadrilaterals such as squares, rectangles, and parallelograms by their properties.",
-      "expected_consistent": false,
+      "expected_judgment": "topic_mismatch",
       "note": "名说认识角，描述在做四边形分类"
+    },
+    {
+      "id": "mt_2VpdPjvewx",
+      "name": "Decimal place value",
+      "description": "Convert between standard measurement units of length, mass, volume and time within one system, writing the results in decimal notation.",
+      "expected_judgment": "topic_mismatch",
+      "note": "名说小数位值，描述教的技能是计量单位换算 —— 用到小数不等于在教小数位值"
+    },
+    {
+      "id": "mt_ot9rcUwBtK",
+      "name": "Deep-Sea Survival",
+      "description": "Explain how deep-sea animals cope with crushing pressure; also cover antifreeze proteins in Antarctic fish, supercooling in wood frogs, cryptobiosis in tardigrades, and other extremophiles such as thermophiles and halophiles.",
+      "expected_judgment": "scope_mismatch",
+      "note": "同属极端环境生存主题，但描述远超『深海』所圈定的范围"
+    },
+    {
+      "id": "mt_yDZbQODIwp",
+      "name": "Earthquake-Resistant Design",
+      "description": "Know that buildings can be designed to resist earthquakes, that tsunami warning systems alert coastal communities, and that communities prepare with evacuation plans and drills.",
+      "expected_judgment": "scope_mismatch",
+      "note": "名称只讲建筑抗震设计，描述还含海啸预警与社区疏散演练"
+    },
+    {
+      "id": "mt_QwWo6an9N1",
+      "name": "Volcanoes & Mass Extinctions",
+      "description": "Explain how large igneous provinces drove global warming, ocean acidification and mass extinctions; also explore how hydrothermal vents on the early Earth may have been the cradle of life.",
+      "expected_judgment": "scope_mismatch",
+      "note": "主体切题，但描述延伸到了生命起源，超出『火山与大灭绝』"
+    },
+    {
+      "id": "mt_3tQXH9GwIa",
+      "name": "Crime & Punishment",
+      "description": "How justice worked in medieval times: trial by ordeal, trial by combat, the role of the sheriff, and punishments such as the stocks and pillory.",
+      "expected_judgment": "scope_mismatch",
+      "note": "反方向的范围不匹配：名称是宽泛标题，描述特指中世纪司法"
+    },
+    {
+      "id": "mt_MewIRdzpzz",
+      "name": "Roman numerals to 100",
+      "description": "Read Roman numerals from I to C, and understand that numeral systems changed over time to include zero and place value.",
+      "expected_judgment": "scope_mismatch",
+      "note": "描述前半切题，后半延伸到记数系统的演变，超出名称"
+    },
+    {
+      "id": "mt_4m8BimI4G5",
+      "name": "Telling time to the minute",
+      "description": "Tell and write the time from analogue and digital clocks to the nearest five minutes, using a.m./p.m. and 12- and 24-hour notation.",
+      "expected_judgment": "scope_mismatch",
+      "note": "粒度对不上：名称说精确到分，描述只要求到五分钟"
+    },
+    {
+      "id": "mt_RlILL2sccX",
+      "name": "Testing Push & Pull Designs",
+      "description": "Analyse data to determine whether a design solution works as intended to change the speed or direction of an object with a push or a pull.",
+      "expected_judgment": "consistent",
+      "note": "对抗样本：初版提示词把这条误判为不符，但『分析数据检验推拉设计是否奏效』正是名称说的事"
     },
     {
       "id": "good_angles",
       "name": "Understanding angles",
       "description": "Recognize that an angle is formed by two rays sharing a common endpoint, and identify acute, right, and obtuse angles.",
-      "expected_consistent": true,
+      "expected_judgment": "consistent",
       "note": "名实相符的『认识角』对照组"
     },
     {
       "id": "good_fractions",
       "name": "Adding fractions with like denominators",
       "description": "Add two fractions that share the same denominator by adding the numerators and keeping the denominator.",
-      "expected_consistent": true,
+      "expected_judgment": "consistent",
       "note": "英文一致案例"
     },
     {
       "id": "good_triangle_cn",
       "name": "三角形内角和",
       "description": "三角形三个内角的度数之和等于 180 度。",
-      "expected_consistent": true,
+      "expected_judgment": "consistent",
       "note": "纯中文一致案例"
     },
     {
       "id": "good_mean_mixed",
       "name": "平均数 (mean)",
       "description": "The mean of a data set is the sum of all the values divided by the number of values.",
-      "expected_consistent": true,
+      "expected_judgment": "consistent",
       "note": "中英混排、跨语言一致案例"
     },
     {
       "id": "good_bar_graph",
       "name": "Reading bar graphs",
       "description": "Read and compare the values represented by the bars in a bar graph.",
-      "expected_consistent": true,
+      "expected_judgment": "consistent",
       "note": "英文一致案例"
     }
   ]

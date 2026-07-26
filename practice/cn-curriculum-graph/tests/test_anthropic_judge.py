@@ -26,18 +26,18 @@ def _fake_client(verdict: Verdict, recorder: _Recorder):
 
 def test_returns_verdict_from_model():
     recorder = _Recorder()
-    client = _fake_client(Verdict(consistent=False, reason="名不符实：名说乘法，描述讲短除法"), recorder)
+    client = _fake_client(Verdict(judgment="topic_mismatch", reason="名不符实：名说乘法，描述讲短除法"), recorder)
 
     judge = AnthropicJudge(client=client)
     verdict = judge(name="Arrays for multiplication", description="四位数除以一位数的短除法")
 
-    assert verdict.consistent is False
+    assert verdict.judgment == "topic_mismatch"
     assert "短除法" in verdict.reason
 
 
 def test_passes_name_and_description_and_model_to_request():
     recorder = _Recorder()
-    client = _fake_client(Verdict(consistent=True), recorder)
+    client = _fake_client(Verdict(judgment="consistent"), recorder)
 
     judge = AnthropicJudge(client=client, model="claude-haiku-4-5")
     judge(name="三角形内角和", description="三角形三个内角的和是 180 度")
@@ -51,7 +51,7 @@ def test_passes_name_and_description_and_model_to_request():
 
 def test_forces_verdict_schema_and_deterministic_sampling():
     recorder = _Recorder()
-    client = _fake_client(Verdict(consistent=True), recorder)
+    client = _fake_client(Verdict(judgment="consistent"), recorder)
 
     AnthropicJudge(client=client)(name="平均数", description="一组数据的总和除以个数")
 

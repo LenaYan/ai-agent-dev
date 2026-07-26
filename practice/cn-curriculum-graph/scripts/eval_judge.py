@@ -39,41 +39,47 @@ def main() -> int:
     cases = json.loads(args.groundtruth.read_text(encoding="utf-8"))["cases"]
     judge = build_judge(args.judge, model=model)
 
-    # 正类 = 名实不符（expected_consistent=false），这是我们真正想抓住的
-    tp = fp = fn = tn = 0
+    labels = ("consistent", "scope_mismatch", "topic_mismatch")
+    short = {"consistent": "一致", "scope_mismatch": "范围不符", "topic_mismatch": "知识点错配"}
+    confusion = {(e, g): 0 for e in labels for g in labels}
+
     print(f"模型：{model}    样本：{len(cases)}\n")
-    print(f"{'结果':<4}{'id':<18}{'期望':<8}{'判定':<8}理由")
-    print("-" * 80)
+    print(f"{'结果':<4}{'id':<18}{'期望':<12}{'判定':<12}理由")
+    print("-" * 92)
     for c in cases:
         verdict = judge(name=c["name"], description=c["description"])
-        expected = c["expected_consistent"]
-        got = verdict.consistent
-        ok = expected == got
-        # 混淆矩阵（以『不符』为正类）
-        if not expected and not got:
-            tp += 1
-        elif expected and not got:
-            fp += 1
-        elif not expected and got:
-            fn += 1
-        else:
-            tn += 1
-        mark = "✓" if ok else "✗ 错"
-        exp_s = "一致" if expected else "不符"
-        got_s = "一致" if got else "不符"
-        print(f"{mark:<4}{c['id']:<18}{exp_s:<8}{got_s:<8}{verdict.reason[:40]}")
+        expected, got = c["expected_judgment"], verdict.judgment
+        confusion[(expected, got)] += 1
+        mark = "✓" if expected == got else "✗ 错"
+        print(f"{mark:<4}{c['id']:<18}{short[expected]:<12}{short[got]:<12}{verdict.reason[:34]}")
 
     total = len(cases)
-    acc = (tp + tn) / total if total else 0.0
-    prec = tp / (tp + fp) if (tp + fp) else float("nan")
-    rec = tp / (tp + fn) if (tp + fn) else float("nan")
-    print("-" * 80)
-    print(f"准确率 accuracy = {acc:.0%}  ({tp + tn}/{total})")
-    print(f"查准 precision = {prec:.0%}   查全 recall = {rec:.0%}   (正类=名实不符)")
-    print(f"混淆矩阵：抓到不符 TP={tp}  漏报 FN={fn}  误报 FP={fp}  正确放过 TN={tn}")
+    correct = sum(confusion[(x, x)] for x in labels)
+    print("-" * 92)
+    print(f"准确率 accuracy = {correct / total:.0%}  ({correct}/{total})\n")
 
-    # 漏掉一个已知的名实不符（FN），说明这个模型不够格，非零退出好让 CI/脚本感知
-    return 1 if fn else 0
+    # 每档单独看查准/查全：整体准确率会被样本最多的那档带着走
+    print(f"{'判定档':<12}{'查准':<8}{'查全':<8}支持数")
+    for x in labels:
+        hit = confusion[(x, x)]
+        predicted = sum(confusion[(e, x)] for e in labels)
+        actual = sum(confusion[(x, g)] for g in labels)
+        p = f"{hit / predicted:.0%}" if predicted else "—"
+        r = f"{hit / actual:.0%}" if actual else "—"
+        print(f"{short[x]:<12}{p:<8}{r:<8}{actual}")
+
+    print("\n混淆矩阵（行=期望，列=判定）")
+    print(f"{'':<12}" + "".join(f"{short[g]:<12}" for g in labels))
+    for e in labels:
+        print(f"{short[e]:<12}" + "".join(f"{confusion[(e, g)]:<12}" for g in labels))
+
+    # CI 视角只有两件事致命：真错配被放过（漏报），或被降级成 WARNING（不再让 CI 红）。
+    # scope↔consistent 之间的出入只影响噪声量，不影响"错的数据能不能被拦住"。
+    missed = confusion[("topic_mismatch", "consistent")]
+    downgraded = confusion[("topic_mismatch", "scope_mismatch")]
+    if missed or downgraded:
+        print(f"\n✗ 知识点错配被放过 {missed} 条、被降级成 warning {downgraded} 条 —— 这个模型不够格")
+    return 1 if (missed or downgraded) else 0
 
 
 if __name__ == "__main__":

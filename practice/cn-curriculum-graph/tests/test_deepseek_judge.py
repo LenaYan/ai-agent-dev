@@ -31,7 +31,7 @@ def _fake_client(recorder: _Recorder, *, tool_input=None, content=None):
                 SimpleNamespace(
                     type="tool_use",
                     name=VERDICT_TOOL_NAME,
-                    input=tool_input if tool_input is not None else {"consistent": True, "reason": ""},
+                    input=tool_input if tool_input is not None else {"judgment": "consistent", "reason": ""},
                 )
             ]
         return SimpleNamespace(content=blocks)
@@ -43,7 +43,7 @@ def test_returns_verdict_from_tool_call():
     recorder = _Recorder()
     client = _fake_client(
         recorder,
-        tool_input={"consistent": False, "reason": "名说乘法阵列，描述在讲短除法"},
+        tool_input={"judgment": "topic_mismatch", "reason": "名说乘法阵列，描述在讲短除法"},
     )
 
     verdict = DeepSeekJudge(client=client)(
@@ -51,7 +51,7 @@ def test_returns_verdict_from_tool_call():
     )
 
     assert isinstance(verdict, Verdict)
-    assert verdict.consistent is False
+    assert verdict.judgment == "topic_mismatch"
     assert "短除法" in verdict.reason
 
 

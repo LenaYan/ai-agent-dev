@@ -53,6 +53,12 @@
 - 产出：sessions/2026-07-24-marble-upstream-analysis.md（原始会话在非 git 目录 ~/Claude/child_watch_baobao，故迁入本仓库）
 - 下一步：同上条——生成流水线；另可选：把 os-taxonomy + 社区 taxonomy-mcp 纳入实验素材，若要做调度实验则需自写 learner model（缺的正是这层）。
 
+## 2026-07-26 — 判定标准从二值扩到三档：档位数是产品决策（TDD）
+- 收获：①**判定档位不够时，模型不会告诉你"没有合适的选项"，它会硬塞进现有某一档**。二值 judge 在 8 条手写 ground truth 上 100%，一上 Marble 真实数据就暴露出第三类情形：名称与描述**同属一个主题但覆盖范围对不上**（Deep-Sea Survival 的描述扩到木蛙和水熊虫）。这类被硬塞进"不符"，于是 ERROR 里混进大量本该是 WARNING 的东西。**改成三档判定（consistent / scope_mismatch / topic_mismatch）→ 两级严重性（无 / WARNING / ERROR）后，ERROR 从外推的约 140 条降到真实的 28 条。**②**ground truth 的样本分布决定了你能发现什么**：手写样本全是"乘法 vs 除法"这种泾渭分明的，压根测不出边界在哪；必须拿真实数据反哺 ground truth（扩到 16 条，含 6 个边界案例 + 1 条初版误判的对抗样本）。③**schema 用 Literal 而非 Enum**：pydantic 把 Literal 内联成 `{"enum":[...]}`，Enum 则生成 `$defs` 引用——各家结构化输出/工具 schema 对 `$ref` 的支持参差不齐，内联更安全。④**LLM 生成的知识图谱，同名节点是高危区**：全量 1590 节点跑完 28 条 ERROR 里 **86%(24/28) 落在跨年龄段复用的同名节点**上（`Understanding angles` 一名七用，其中 4 个描述分别在讲长方形面积/四边形分类/尺规作图/长方形性质）。不是随机噪声，是"名称当主题族标签复用、描述来自各年龄段具体课标条目"导致的逐级漂移——本项目的生成流水线要专门防这一手。
+- 全量实测（deepseek-v4-flash，10 并发，205s，0 失败，约 $0.08）：consistent 1454(91.4%) / scope_mismatch 108(6.8%) / topic_mismatch 28(1.8%)。16 条 ground truth 上三档查准查全均 100%。
+- 产出：`Verdict.judgment` 三值 Literal + `is_consistent`、新增 `NAME_DESC_SCOPE_MISMATCH`(warning)、prompt 教三档区分（含"拿不准倾向 consistent"）、eval_judge 改 3×3 混淆矩阵（漏报/降级才非零退出）、ground truth 8→16 条；58 测试（+3）。
+- 下一步：生成流水线骨架（多 agent 抽取→去重→依赖边→交叉审核，先用十几个手写种子跑通链路）。
+
 ## 2026-07-26 — 多 provider judge：DeepSeek 接入 + 真实数据实测（TDD）
 - 收获：①**结构化输出不是可移植特性，"强制工具调用"才是**。DeepSeek 的 Anthropic 兼容端点（`https://api.deepseek.com/anthropic`）能用同一个 anthropic SDK，但**照收 `output_format` 却不遵守**（实测返回自由文本"否"，SDK 在 JSON 解析上炸）；改成「强制调用一个 `input_schema` 就是 Verdict 的工具」即通 —— 任何支持 tool use 的模型都能跑，代价是自己 `model_validate` 一遍。另：DeepSeek v4 默认开 thinking，而**思考模式不接受强制 tool_choice**（400），需显式 `thinking={"type":"disabled"}`；分类任务本也不需要思考预算。②**judge 多样性必须来自模型，不能来自提示词**：两个 judge 共用同一份系统提示（`judges/prompt.py`），否则分歧分不清是"模型看法不同"还是"问题问得不一样"，投票机制失去意义。而 Anthropic/DeepSeek 是不同训练谱系，误判模式不重叠，正好当交叉审核的独立投票者（同族模型误判高度相关，投两次约等于投一次）。③**干净样本会掩盖定义歧义**：8 条手写 ground truth 上 deepseek-v4-flash 拿了 100%，但抽 Marble 真实节点 124 个跑出 11 条(≈9%)，其中 6 条是「名称与描述**覆盖范围**不一致」而非「讲的是不同知识点」—— ground truth 测不出的语义缺口，真实数据一跑就现形。④**环境变量会互相踩**：DeepSeek 官方教 `export ANTHROPIC_BASE_URL=...`，但同机 Claude Code 也读这个变量，export 出去会把 Claude Code 整个劫持走 —— base_url 一律代码里显式传，key 用独立 `DEEPSEEK_API_KEY`。
 - 成本/性能实测：deepseek-v4-flash 单次约 1.4s；8 并发跑 124 节点 22s、0 失败。全量 1590 节点约 $0.08（对比 Haiku 约 $0.6）。订阅走 `claude -p` 也能当 judge 且判得对，但单次 26s、烧 26k token（有效输入只有 10）—— agent runtime 的固定开销，批处理场景不成立。
