@@ -1122,18 +1122,19 @@ def retry_on(exc: Exception) -> bool:
     return not isinstance(exc, PROGRAMMING_ERRORS)
 
 
-_RETRY = RetryPolicy(max_attempts=3, retry_on=retry_on)
+RETRY_POLICY = RetryPolicy(max_attempts=3, retry_on=retry_on)
 # 单个 LLM 层最长容忍时间。手写版**根本没有超时概念** —— 这一条是框架白送的。
-_TIMEOUT = timedelta(minutes=10)
+# 公开命名（无下划线前缀）：graph_fanout.py 要跨模块复用它们。
+NODE_TIMEOUT = timedelta(minutes=10)
 ```
 
 把 `build_graph()` 里三个走 LLM 的 Node 挂上策略（纯规则的 chunk / assemble 不需要）：
 
 ```python
-    g.add_node("extract", node_extract, retry_policy=_RETRY, timeout=_TIMEOUT)
-    g.add_node("dedupe", node_dedupe, retry_policy=_RETRY, timeout=_TIMEOUT)
-    g.add_node("edges", node_edges, retry_policy=_RETRY, timeout=_TIMEOUT)
-    g.add_node("review", node_review, retry_policy=_RETRY, timeout=_TIMEOUT)
+    g.add_node("extract", node_extract, retry_policy=RETRY_POLICY, timeout=NODE_TIMEOUT)
+    g.add_node("dedupe", node_dedupe, retry_policy=RETRY_POLICY, timeout=NODE_TIMEOUT)
+    g.add_node("edges", node_edges, retry_policy=RETRY_POLICY, timeout=NODE_TIMEOUT)
+    g.add_node("review", node_review, retry_policy=RETRY_POLICY, timeout=NODE_TIMEOUT)
 ```
 
 把 `run_pipeline_lg` 改成支持 checkpointer：
@@ -1595,8 +1596,8 @@ from cn_curriculum_graph.pipeline import extract as extract_mod
 from cn_curriculum_graph.pipeline import io
 from cn_curriculum_graph.pipeline import review as review_mod
 from cn_curriculum_graph.pipeline.graph import (
-    _RETRY,
-    _TIMEOUT,
+    NODE_TIMEOUT,
+    RETRY_POLICY,
     PipelineState,
     node_assemble,
     node_chunk,
@@ -1629,11 +1630,11 @@ def node_extract_one(payload: _ExtractOne, runtime) -> dict:
 def build_fanout_graph() -> StateGraph:
     g = StateGraph(PipelineState, context_schema=type(None))
     g.add_node("chunk", node_chunk)
-    g.add_node("extract_one", node_extract_one, retry_policy=_RETRY, timeout=_TIMEOUT)
+    g.add_node("extract_one", node_extract_one, retry_policy=RETRY_POLICY, timeout=NODE_TIMEOUT)
     g.add_node("collect_extract", _collect_extract)
-    g.add_node("dedupe", node_dedupe, retry_policy=_RETRY, timeout=_TIMEOUT)
-    g.add_node("edges", node_edges, retry_policy=_RETRY, timeout=_TIMEOUT)
-    g.add_node("review_one", _review_one, retry_policy=_RETRY, timeout=_TIMEOUT)
+    g.add_node("dedupe", node_dedupe, retry_policy=RETRY_POLICY, timeout=NODE_TIMEOUT)
+    g.add_node("edges", node_edges, retry_policy=RETRY_POLICY, timeout=NODE_TIMEOUT)
+    g.add_node("review_one", _review_one, retry_policy=RETRY_POLICY, timeout=NODE_TIMEOUT)
     g.add_node("review", _review_collect)
     g.add_node("assemble", node_assemble)
 
