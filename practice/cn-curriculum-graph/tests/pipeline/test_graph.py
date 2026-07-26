@@ -6,15 +6,18 @@ state 累加语义对不对"，行为一致性由 test_run.py 的参数化端到
 
 import json
 import operator
+import time
+from datetime import timedelta
 from typing import Annotated, get_type_hints
 
 import pytest
+from langgraph.errors import NodeTimeoutError
+from langgraph.types import RetryPolicy
 
 from cn_curriculum_graph.pipeline import assemble as assemble_mod
-from cn_curriculum_graph.pipeline import edges as edges_mod
 from cn_curriculum_graph.pipeline import extract as extract_mod
 from cn_curriculum_graph.pipeline import graph as graph_mod
-from cn_curriculum_graph.pipeline.faults import FaultSpec, wrap_deps
+from cn_curriculum_graph.pipeline.faults import wrap_deps
 from cn_curriculum_graph.pipeline.graph import PipelineState, build_graph, retry_on, run_pipeline_lg
 from cn_curriculum_graph.pipeline.models import ProposedEdge, ProposedEdgeBatch
 from .test_run import SOURCE, _fake_deps
@@ -62,6 +65,53 @@ def test_retry_on_skips_programming_errors():
     assert retry_on(_Rate("429")) is True
     for exc in (AttributeError(), TypeError(), NameError(), KeyError()):
         assert retry_on(exc) is False
+
+
+def test_node_timeout_actually_fires_for_blocking_node_body(tmp_path, monkeypatch):
+    """C1 回归锁定：`NODE_TIMEOUT` 必须真的能打断一个 Node，而不只是挂在
+    `add_node(..., timeout=...)` 上却从不生效。
+
+    四个 LLM Node 虽是 `async def`，函数体过去是直接同步调用六层函数
+    （底下是阻塞的 HTTP 请求），从不 `await` 任何东西——这会把事件循环
+    整个占住，`langgraph.pregel._retry._arun_with_timeout` 里和 Node 赛跑的
+    看门狗 task 拿不到调度机会，`timeout` 形同虚设。
+
+    复现方式（与审查者的手动实测一致）：把 extract 层换成一个纯同步
+    `time.sleep(3)`（无 await），`NODE_TIMEOUT` 调到 1 秒。
+    - 修复前：整个事件循环被 sleep 占满，看门狗排不上号，管道正常跑完，
+      不抛任何异常 —— 这条测试应当 FAIL（`DID NOT RAISE`）。
+    - 修复后（Node 体内改用 `await asyncio.to_thread(...)`）：sleep 被扔进
+      后台线程，事件循环空出来，看门狗如期在 1 秒后判定超时，
+      `NodeTimeoutError` 真实抛出。
+    """
+    monkeypatch.setattr(graph_mod, "NODE_TIMEOUT", timedelta(seconds=1))
+    # 关掉重试：这条测试只想验证"超时会不会被触发"，不想被"重试 3 次、
+    # 每次都要等阻塞体跑完/被放弃"的额外耗时和噪音干扰断言。
+    monkeypatch.setattr(graph_mod, "RETRY_POLICY", RetryPolicy(max_attempts=1, retry_on=retry_on))
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "m.md").write_text("3.1.1 甲。\n", encoding="utf-8")
+
+    real_extract_all = extract_mod.extract_all
+
+    def blocking_extract_all(chunks, extractor):
+        # 刻意纯同步阻塞、函数体里没有任何 await —— 这正是修复前四个
+        # Node 的真实形状（六层函数底下是阻塞的 anthropic SDK 调用）。
+        # 注意：这里必须调用先保存下来的 real_extract_all，不能调用
+        # `extract_mod.extract_all` —— 那个名字这一行之后会被 monkeypatch
+        # 指向 blocking_extract_all 自己，调它等于递归调用自己、永不返回。
+        time.sleep(3)
+        return real_extract_all(chunks, extractor)
+
+    monkeypatch.setattr(graph_mod.extract_mod, "extract_all", blocking_extract_all)
+
+    with pytest.raises(NodeTimeoutError) as exc_info:
+        run_pipeline_lg(
+            source, tmp_path / "out", _fake_deps(), model_id="fake", curriculum="c"
+        )
+
+    assert "run timeout of 1.000s" in str(exc_info.value)
 
 
 def test_transient_failure_is_retried_and_recovers(tmp_path, monkeypatch):
@@ -153,6 +203,30 @@ def test_checkpoint_resumes_instead_of_rerunning_completed_nodes(tmp_path, monke
     )
 
     assert good_counter.counts["extractor"] == 0
+    assert (tmp_path / "out" / "graph.json").exists()
+
+
+def test_checkpoint_db_parent_dir_is_created_if_missing(tmp_path):
+    """Minor 项：`--checkpoint` 指向一个父目录不存在的路径时，不应该让
+    sqlite 抛裸 `sqlite3.OperationalError`（"unable to open database
+    file"）——那条报错不指名道姓是"目录不存在"，排查体验很差。`out_dir`
+    早就有 `mkdir(parents=True, exist_ok=True)`，`checkpoint_db` 的父目录
+    应该享受同等待遇。
+    """
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "m.md").write_text("3.1.1 甲。\n", encoding="utf-8")
+
+    # 父目录（nested/deeper）故意不存在
+    db = tmp_path / "nested" / "deeper" / "cp.sqlite"
+    assert not db.parent.exists()
+
+    run_pipeline_lg(
+        source, tmp_path / "out", _fake_deps(), model_id="fake",
+        curriculum="c", checkpoint_db=db, thread_id="t-mkdir",
+    )
+
+    assert db.exists()
     assert (tmp_path / "out" / "graph.json").exists()
 
 

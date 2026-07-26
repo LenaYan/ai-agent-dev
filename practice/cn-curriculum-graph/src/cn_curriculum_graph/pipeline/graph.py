@@ -15,9 +15,8 @@ Task 5 追加实测（同一 langgraph 1.2.9）：
   无条件 `raise sync_timeout_unsupported`，哪怕 Node 函数本身已经是
   `async def` 也一样；只有 `.ainvoke()` 落到的 `arun_with_retry` 才真正
   遵守 timeout。因此 extract/dedupe/edges/review 四个挂了
-  `retry_policy`/`timeout` 的 Node 都改成了 `async def`（纯机制性改动，
-  函数体没有 await、没有新增业务逻辑），且 `run_pipeline_lg` 内部改用
-  `asyncio.run(app.ainvoke(...))`，对外仍保持同步签名。
+  `retry_policy`/`timeout` 的 Node 都改成了 `async def`，且 `run_pipeline_lg`
+  内部改用 `asyncio.run(app.ainvoke(...))`，对外仍保持同步签名。
 - `SqliteSaver`（`langgraph.checkpoint.sqlite`）显式不支持 async 方法
   （`aget_tuple` 等直接 `raise NotImplementedError`，实测报错原文见
   `.superpowers/sdd/task-5-report.md`），既然编排走的是 ainvoke，
@@ -25,6 +24,14 @@ Task 5 追加实测（同一 langgraph 1.2.9）：
   依赖 `aiosqlite`，已随 `langgraph-checkpoint-sqlite` 一并装好，
   pyproject 不需要再加一行）。这两点都与 Task 5 brief 原稿的代码不同，
   是被编译期/运行期报错逼出来的调整，不是我自己的偏好。
+- **C1 修正（同一 Task 5，被 code review 打回后补）**：上面两点最初实现时，
+  这四个 Node 的函数体虽是 `async def` 却完全没有 `await`——直接同步调用
+  六层函数，这会让 `timeout` 参数编译期能过、运行期却永远不生效（事件
+  循环被阻塞调用整个占住，看门狗 task 拿不到调度机会）。已实测复现并修复：
+  四层内部对六层函数的调用统一改成 `await asyncio.to_thread(...)`，细节和
+  代价见 `NODE_TIMEOUT` 定义处的注释。这里更正一句，避免误导：`async def`
+  是编译期硬要求没错，但"函数体不需要 await"是不成立的——那正是本次 C1
+  要修的地方。
 """
 
 from __future__ import annotations
@@ -69,8 +76,57 @@ def retry_on(exc: Exception) -> bool:
 
 
 RETRY_POLICY = RetryPolicy(max_attempts=3, retry_on=retry_on)
-# 单个 LLM 层最长容忍时间。手写版**根本没有超时概念** —— 这一条是框架白送的。
-# 公开命名（无下划线前缀）：graph_fanout.py 要跨模块复用它们。
+# **I1：Node 级重试的真实语义（Task 5 code review 要求补记，均已实测）**——
+# 只看 `build_graph()` 里四个 Node 各挂了 `retry_policy=RETRY_POLICY` 会
+# 得出错误结论，这里把两条实测结果写清楚：
+#
+# 1. **对"LLM 调用偶发失败"这一类真实故障不可达**：extract/dedupe/edges/
+#    review 四层背后的六层纯函数（extract_all/dedupe/propose_all/
+#    review_drafts/review_edges）一致采用「逐条 try/except：
+#    `PROGRAMMING_ERRORS` 直接 raise，其余 Exception 转成 DropRecord 并
+#    continue，不冒泡出该层函数本身」的策略（"单条目失败不中断整批"）。
+#    这意味着 API 限流/超时/网络抖动这类典型 LLM 故障，从不会让 Node 抛出
+#    异常，`RetryPolicy` 也就从未被触发。实测：向 extractor 注入 API 类
+#    异常，`extractor` 调用计数仍等于 chunk 数（每条各调一次，没有一次
+#    重试）。
+# 2. **真能触发时，粒度是整层——比手写版粗**：只有当六层函数本身整体抛出
+#    （例如磁盘写入失败、六层函数自身的编程错误之外的意外故障）时，
+#    `RetryPolicy` 才会重跑，但重跑单位是"整个 Node 再调一次"，也就是把
+#    这一层的全部条目重新处理一遍，不管之前哪些条目本来是成功的。实测：
+#    4 个 chunk、故障注入在 extract 层处理完最后一个 chunk 时抛出 → 整层
+#    实际被调用 8 次（无故障场景是 4 次），即前 3 个已成功的 chunk 也被
+#    重新跑了一遍。
+#
+# **结论（这是这次 A/B 对比的一手素材，不只是活在报告里）**：手写版逐条
+# try/except 的重试粒度——只重试失败的那一条——在这个维度上严格优于
+# LangGraph 的 Node 级 RetryPolicy；框架这层"重试能力"的真实价值仅限于
+# "整层调用彻底失败"这一较窄的故障类别，覆盖不到"LLM 单次调用失败"这个
+# 最常见的真实故障场景（那类故障早被六层函数自己的逐条 try/except 吞掉、
+# 转成 DropRecord 了）。
+
+# 单个 LLM 层最长容忍时间。手写版**根本没有超时概念**，这条能力确实是框架
+# 提供的——但不是"白送"，代价在下面写清楚。
+#
+# **C1 修复记录（Task 5 code review 打回）**：langgraph 的每 Node timeout 靠
+# `pregel/_retry.py::_arun_with_timeout` 让 Node 的后台 task 和一个看门狗
+# task 用 `asyncio.wait(..., FIRST_COMPLETED)` 赛跑。这要求 Node 的协程体在
+# 阻塞期间必须真正把控制权交还给事件循环（即内部要有 `await`），看门狗才有
+# 机会被调度。四个 LLM Node 曾经是 `async def` 但函数体从不 `await`（直接
+# 同步调用六层函数，底下是阻塞的 anthropic SDK HTTP 请求）——这会把事件
+# 循环整个占住，看门狗拿不到调度机会，等到阻塞调用自己返回时，
+# `_arun_with_timeout` 里 `if bg in done` 这一步会先于超时分支判定"任务按时
+# 完成"，`timeout` 参数形同虚设。已用真实 HTTP 阻塞函数体 + 1 秒 timeout
+# 实测复现：正常返回，不超时（对照组：函数体里有真 `await` 时，超时如期
+# 触发，`NodeTimeoutError ... exceeded its run timeout of 1.000s`）。
+#
+# 修复：四个 Node 内部对六层函数的调用改成 `await asyncio.to_thread(...)`，
+# 把阻塞调用扔进线程池，事件循环空出来才能真正调度看门狗。
+#
+# **代价（不是"资源被真正回收"）**：`asyncio.to_thread` 起的线程杀不掉。
+# 超时只能让编排层放弃等待、把 NodeTimeoutError 抛给调用方，那条后台线程
+# 和它底下仍在跑的 HTTP 请求会继续跑到自然结束（或被 anthropic SDK 自己的
+# 客户端超时打断），只是编排层不再等它、也不再理会它的返回值。这意味着
+# "流水线不再永远挂着"，但不意味着底层资源被真正取消。
 NODE_TIMEOUT = timedelta(minutes=10)
 
 
@@ -137,22 +193,28 @@ def node_chunk(state: PipelineState, runtime) -> dict:
 
 
 async def node_extract(state: PipelineState, runtime) -> dict:
-    """async 是纯机制性的，不是业务逻辑：LangGraph 1.2.9 的 per-node timeout
-    只支持 async node（同步节点在同一进程内没法被安全取消，见
-    langgraph.pregel._utils.validate_timeout_supported）。这四个走 LLM 的
-    Node 挂了 NODE_TIMEOUT，编译期就会因为函数是同步的而报
-    ValueError（已实测），必须改成 async def 才能通过校验。函数体仍是
-    「取 state → 调那层已有同步纯函数 → 返回 delta」，没有 await，
-    不引入并发语义，也没有多写一行业务逻辑。
+    """async 本身是编译期硬要求（LangGraph 1.2.9 的 per-node timeout 只支持
+    async node，见 langgraph.pregel._utils.validate_timeout_supported），
+    但光有 `async def` 不够——见 NODE_TIMEOUT 定义处的 C1 修复记录：
+    `await asyncio.to_thread(...)` 才是让 NODE_TIMEOUT 真正生效的那一步，
+    不是可选的风格选择。函数体仍是「取 state → 调那层已有同步纯函数 →
+    返回 delta」，没有多写一行业务逻辑，只是把"调用方式"从直接同步调用
+    换成"扔进线程池、await 它的结果"。
     """
-    drafts, drops = extract_mod.extract_all(state["chunks"], runtime.context.extractor)
+    drafts, drops = await asyncio.to_thread(
+        extract_mod.extract_all, state["chunks"], runtime.context.extractor
+    )
     io.write_stage(_out(state) / "02-drafts.json", drafts)
     io.append_drops(_out(state) / "dropped.json", drops)
     return {"drafts": drafts, "drops": drops}
 
 
 async def node_dedupe(state: PipelineState, runtime) -> dict:
-    result = dedupe_mod.dedupe(state["drafts"], runtime.context.same_topic_judge)
+    # 见 node_extract 的注释与 NODE_TIMEOUT 定义处的 C1 修复记录：
+    # await asyncio.to_thread 是让 NODE_TIMEOUT 真正生效的必要条件。
+    result = await asyncio.to_thread(
+        dedupe_mod.dedupe, state["drafts"], runtime.context.same_topic_judge
+    )
     io.write_stage(_out(state) / "03-deduped.json", result.kept)
     io.write_stage(_out(state) / "merges.json", result.merges)
     io.append_drops(_out(state) / "dropped.json", result.drops)
@@ -160,7 +222,10 @@ async def node_dedupe(state: PipelineState, runtime) -> dict:
 
 
 async def node_edges(state: PipelineState, runtime) -> dict:
-    proposed, drops = edges_mod.propose_all(state["deduped"], runtime.context.edge_proposer)
+    # 见 node_extract 的注释与 NODE_TIMEOUT 定义处的 C1 修复记录。
+    proposed, drops = await asyncio.to_thread(
+        edges_mod.propose_all, state["deduped"], runtime.context.edge_proposer
+    )
     io.write_stage(
         _out(state) / "04-edges.json",
         [
@@ -174,16 +239,24 @@ async def node_edges(state: PipelineState, runtime) -> dict:
 
 
 async def node_review(state: PipelineState, runtime) -> dict:
+    """本层唯一调 LLM 的两步（review_drafts / review_edges）用
+    `await asyncio.to_thread(...)` 包起来——见 NODE_TIMEOUT 定义处的 C1
+    修复记录。中间的 filter_edges_by_kept_drafts / detect_orphans 是纯
+    Python 集合运算，不碰网络，没有阻塞事件循环的必要，保持直接同步调用。
+    """
     deps = runtime.context
-    draft_review = review_mod.review_drafts(
-        state["deduped"], deps.fidelity_judges, deps.name_judges
+    draft_review = await asyncio.to_thread(
+        review_mod.review_drafts, state["deduped"], deps.fidelity_judges, deps.name_judges
     )
     kept_ids = {d.draft_id for d in draft_review.kept}
     surviving, prefilter_drops = review_mod.filter_edges_by_kept_drafts(
         state["proposed"], kept_ids
     )
-    edge_review = review_mod.review_edges(
-        {d.draft_id: d for d in draft_review.kept}, surviving, deps.edge_judges
+    edge_review = await asyncio.to_thread(
+        review_mod.review_edges,
+        {d.draft_id: d for d in draft_review.kept},
+        surviving,
+        deps.edge_judges,
     )
     orphan_drops = review_mod.detect_orphans(
         draft_review.kept, state["proposed"], edge_review.kept_edges
@@ -217,18 +290,35 @@ def node_assemble(state: PipelineState, runtime) -> dict:
     （已用 test_assemble_retry_via_checkpoint_does_not_duplicate_drops
     实测复现：修复前 2 条，见 task-5-report.md 的 RED 输出）。
 
-    修复方式：让这一层的磁盘写入只发生在"整个 Node 都跑成功"之后，与
-    extract/dedupe/edges/review 四层已经在用的模式完全一致——那四层的
-    `io.write_stage`/`io.append_drops` 也全部放在函数体最后，这不是巧合，
-    是同一个约束（"失败的尝试不留下任何部分写入，只有成功的那一次会写盘
-    恰好一次"）在每一层都必须成立。这样无论 assemble 是被自动重试
-    （它没有）还是被手工重新调用 `run_pipeline_lg` 恢复，失败的那次尝试
-    在还没走到这一行之前就已经抛出，不会有任何写入；只有最终成功的那次
-    调用会写一次。代价：`dup_drops` 不再是"算出来就立刻落盘"，如果
-    `assemble_mod.assemble`/`run_all` 之后进程被 SIGKILL 之类硬杀（而不是
-    Python 异常），这条记录会跟着丢——但那种情形下 `graph.json` 本身也
-    没写完，重新跑一次全新的（未 resume 的）pipeline 才是正确应对，不依赖
-    这条记录的持久性。
+    修复方式：把 `io.append_drops(dup_drops)` 这个 **append 型**写入挪到
+    "整个 Node 都跑成功"之后，与 extract/dedupe/edges/review 四层已经在用
+    的模式一致——那四层的 `io.append_drops` 也全部放在函数体最后。这样无论
+    assemble 是被自动重试（它没有）还是被手工重新调用 `run_pipeline_lg`
+    恢复，失败的那次尝试在还没走到这一行之前就已经抛出，不会重复
+    append；只有最终成功的那次调用会 append 一次。
+
+    **I2 澄清（Task 5 code review 指出，本函数内部并不完全满足这条不变量，
+    我的判断如下）**：这条"只在 Node 成功后才写盘"的说法，严格来说只对
+    `dup_drops` 这一处 append 型写入成立——本函数里还有一处 `graph.json`
+    的写入（`(_out(state) / "graph.json").write_text(...)`），它排在
+    `run_all` **之前**，`run_all` 之后仍可能抛异常（校验器 bug、意外
+    异常等），届时 `graph.json` 已经落盘但 Node 整体判定为失败。这不算
+    危险——`write_text` 是**覆盖型**写入，天然幂等：不管这次尝试成功还是
+    后续重跑覆盖它多少次，磁盘上最终只有一份内容，不会像 append 型写入
+    那样"重复的尝试 = 重复的记录"。我选择不把它挪到函数末尾：那样做的
+    代价是——若 `run_all`（纯校验、不改图）抛异常，会连带丢失本次已经
+    正确装配出来的 `graph.json`，对定位"是校验器崩了还是图本身有问题"
+    反而更不利。准确的表述是：**append 型写入只应发生在 Node 成功之后；
+    覆盖型写入本身幂等、对写入时机不敏感**，两者不能用同一条"只在成功后
+    写盘"的规则一刀切地要求。
+
+    **无论哪种写入方式都盖不住的一个洞**：Node 函数体跑完（包括这里的
+    `io.append_drops`）到 LangGraph 把这次执行结果落进 checkpoint 数据库
+    之间，如果进程在这个窗口被硬杀（SIGKILL 等，而非 Python 异常），
+    LangGraph 不会认为这次执行已完成，下一次 resume 会把整个 Node 从头
+    重新跑一遍——`dup_drops` 会被重新算出并再 append 一次，产生与本任务
+    描述的原始 bug 相同的重复记录，这条修复对这个更窄的时间窗口没有防护，
+    只有"进程本身抛出的 Python 异常"这一类失败被这次修复覆盖到。
     """
     deduped_edges, dup_drops = assemble_mod.dedupe_edges_by_pair(state["kept_edges"])
     graph = assemble_mod.assemble(
@@ -313,8 +403,24 @@ def run_pipeline_lg(
     完整列表，用于返回值。若在这里再 append 一次，dropped.json 里每条记录
     都会重复一份 —— 这正是本任务要处理的交互风险之一，且与是否发生过重试
     / 续跑无关：哪怕全程零故障，这一条额外 append 也会让每条记录翻倍。
+
+    **I3：调用方约束（Task 5 code review 要求补记）**——本函数内部用
+    `asyncio.run(...)` 包住 `.ainvoke(...)`，这要求调用时**当前线程没有
+    正在运行的 event loop**。若从一个已有 event loop 的上下文（例如某个
+    `async def` 函数内部，或已经跑起来的 asyncio server）直接调用
+    `run_pipeline_lg`，会得到
+    `RuntimeError: asyncio.run() cannot be called from a running event loop`。
+    本项目当前的 CLI 入口和 pytest 用例都是同步调用，不会撞上这条限制；
+    但模块顶部文档已经预告了后续的 `graph_fanout.py`，任何把这条流水线
+    包进已有 async 上下文（包括未来可能的 server 化）的用法都需要注意这一点
+    —— 届时应改为直接 `await` 内部的 `_ainvoke()` 逻辑，而不是再包一层
+    `asyncio.run`。
     """
     out_dir.mkdir(parents=True, exist_ok=True)
+    if checkpoint_db is not None:
+        # 父目录不存在时 sqlite 只会抛裸 OperationalError（"unable to open
+        # database file"），排查体验很差——这里同 out_dir 一样提前建好。
+        checkpoint_db.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "source_dir": str(source_dir),
         "out_dir": str(out_dir),
