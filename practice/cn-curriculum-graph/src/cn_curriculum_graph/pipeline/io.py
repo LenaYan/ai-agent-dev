@@ -35,10 +35,23 @@ def read_stage(path: Path, model: type[T]) -> list[T]:
 def _drop_dedup_key(record: dict) -> tuple:
     """去重键：`(stage, ref, reason, detail)` 全字段。
 
-    去重边界（如实写清，不是保证）：若将来出现两条合法的、全字段相同的
-    不同记录，它们会被折叠成一条——目前的原因码设计下 `ref`（通常是
-    draft_id 或 "target<-prereq" 这种组合）足以唯一区分同一原因下的不同
-    对象，但这只是当前设计的一个前提，不是这个函数能保证的不变量。
+    去重边界（如实写清，不是保证）：这不是"未来可能出现"的假设情形——
+    它今天就可复现过。`dedupe_edges_by_pair`（`pipeline/assemble.py`）在
+    同一 `(target, prerequisite)` 上遇到 ≥3 条同强度边时，曾经会产出
+    `(stage, ref, reason, detail)` 完全相同的多条 DropRecord：`detail`
+    当时只编码了强度对比文案，不含各条边各自的 `reason`，导致同强度的
+    第 2、第 3 条边在这里撞出同一个 key，本函数会把两条真实丢弃折叠成一条。
+
+    现状（已修复）：`dedupe_edges_by_pair` 产出的 `detail` 现在带上了被
+    丢弃那条边自己的 `reason`，只要同一 `pair_ref` 下各条边的 `reason`
+    不完全相同，`detail` 就不会撞车，本函数按全字段去重就只会折叠"同一条
+    记录被写两次"（checkpoint 重入的场景），不会误折叠不同的丢弃事件。
+
+    剩余风险：这依赖调用方（`dedupe_edges_by_pair` 或其他产出 DropRecord
+    的代码）让同一 `ref` 下的多条记录在 `detail` 里带有可区分的信息；
+    本函数自己只做字符串比较，不知道、也不保证"内容不同"这件事——如果
+    未来出现两条 `reason` 恰好文字相同的边被同时丢弃，或者有新的调用方
+    不遵守"detail 要能区分"这个约定，它们仍会在这里被折叠成一条。
     """
     return (record.get("stage"), record.get("ref"), record.get("reason"), record.get("detail"))
 

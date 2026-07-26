@@ -79,10 +79,16 @@ from cn_curriculum_graph.validators.base import Finding, Severity
 # 循环开始之前就抛出的确定性配置错误（忘了传 judges），不是"这一条数据/
 # 这次调用恰好失败了"。RETRY_POLICY 的注释自己写着"程序 bug 不该被重试——
 # 重试三次只会把同一个 bug 犯三遍"，但收窄的 PROGRAMMING_ERRORS 里没有
-# ValueError，导致这类配置错误被 Node 级 RetryPolicy 原样重犯了三遍（30
-# draft × 2 judge 的生产规模下，一次忘传 judges 的配置错误会白烧约 180 次
-# 真实 LLM 调用外加退避等待，已实测：见 test_retry_on_excludes_value_error_
-# to_avoid_repeating_config_mistakes，RED 时 review_drafts 被调用 3 次）。
+# ValueError，导致这类配置错误被 Node 级 RetryPolicy 原样重犯了三遍——
+# 已实测：见 test_retry_on_excludes_value_error_to_avoid_repeating_config_
+# mistakes，RED 时 review_drafts 被调用 3 次。
+# **订正（此前这里写过"白烧约 180 次真实 LLM 调用"，不实——已删除）**：
+# review.py 里这三处空 judges 哨兵都在 for 循环之前就 raise（见
+# review_drafts/review_edges 顶部），不会执行任何一次真实 judge/LLM 调用，
+# 不管生产规模多大。重跑三遍的真实代价是"3 次哨兵 raise + RetryPolicy 的
+# 退避等待"——不是重复的 LLM 调用。真正会被重复浪费的场景是六层函数整体
+# 抛出的非哨兵错误（见下面 I1 一节：整层重跑会真的把已成功的条目也重新
+# 处理一遍，那才是有真实 LLM 调用代价的地方）。
 #
 # **我的取舍（ValueError 的边界，S3 明确要求想清楚）**：这里选择的是"全部
 # ValueError 都不重试"，而不是只精确排除"空 judges"这一种情形（那样做需要
