@@ -6,8 +6,9 @@
 让 LLM 能在其上做定位与调度 —— 对标 [Marble Skill Taxonomy](https://github.com/withmarbleapp/os-taxonomy)，
 但换成中国课标，并修掉原版几个已确认的缺陷。
 
-**当前进度：只做了地基。** schema 定义 + CI 校验层已完成并测试通过；
-**图数据本身一个节点都还没有**。这是刻意的顺序 —— 先有校验，才谈生成。
+**当前进度：地基 + 生成流水线已跑通。** schema 定义、CI 校验层、六层生成流水线
+（切分 → 抽取 → 去重 → 连边 → 交叉审核 → 组装）均已完成，159 个测试，
+并已接真模型端到端跑通一次。产出的图数据**不入库**（见下方「许可与来源」）。
 
 > ⚠️ 这个项目的**真正资产是流水线，不是数据集**。
 > 数据集的可信度取决于教研专业审核（见 `docs/feasibility-analysis.md` 第二节），
@@ -18,7 +19,7 @@
 
 ```bash
 uv sync
-uv run pytest                        # 58 个测试
+uv run pytest                        # 159 个测试
 uv run ccg-validate data/example-graph.json  # 校验一份图数据（默认跳过语义一致性，留 CONSISTENCY_SKIPPED 警告）
 
 uv run python scripts/export_schema.py   # 重新导出 JSON Schema
@@ -43,6 +44,20 @@ uv run python scripts/eval_judge.py --judge deepseek   # 16 条 ground truth，�
 > 同机的 Claude Code 自己也读这个变量，会被整个劫持到 DeepSeek 上。
 > 本项目一律在代码里显式传 `base_url=`，key 用独立的 `DEEPSEEK_API_KEY`。
 
+**生成流水线**：从课标原文跑出一份图（需 `DEEPSEEK_API_KEY`）。
+
+```bash
+# 素材放 data/source/*.md，段落以空行分隔，每段首行以条目编号开头（如 3.1.2）
+uv run ccg-generate --source data/source --out data/generated
+```
+
+产出逐层落盘，可人眼检查（`01-chunks` → `02-drafts` → `03-deduped` → `04-edges`
+→ `05-reviewed` → `graph.json`），外加跨层累加的 `dropped.json` 与 `review-log.json`。
+**素材获取不属于流水线** —— 从 PDF 转文本也好、手敲也好，在管道外解决，
+这条边界让法律风险不由这份代码承担（`docs/feasibility-analysis.md` 闸门 1）。
+
+设计与实现依据见 `docs/pipeline-design.md`。
+
 把校验层跑在 Marble 的真实数据上（验证规则在规模下有效）：
 
 ```bash
@@ -64,6 +79,15 @@ judges/              Judge 协议的实现：(name, description) -> Verdict
   prompt.py          系统提示，所有实现共用（多样性要来自模型，不是提示词）
   anthropic_judge.py Anthropic 原生结构化输出 messages.parse(output_format=)
   deepseek_judge.py  DeepSeek 兼容端点，强制工具调用取结构化输出
+pipeline/            生成流水线，六层各为 (input, deps) -> output 的纯函数
+  models.py          内部类型；DraftContent 即给 LLM 的 input_schema
+  chunk.py           纯规则切分，条目编号在这一层绑定
+  extract.py         LLM 抽取候选知识点
+  dedupe.py          规则配对 + LLM 确认 + 同名强制消歧
+  edges.py           剪枝（由校验规则反推）+ LLM 连边
+  review.py          三维度多判定器投票，分歧即淘汰
+  assemble.py        组装成对外 schema，填 id / provenance
+  run.py             编排 + ccg-generate 入口
 runner.py            串起全部校验，ERROR → CI 红
 cli.py               ccg-validate 入口
 adapters/marble.py   仅用于把校验层跑在真实数据上，不引入其内容
@@ -155,6 +179,32 @@ topic_mismatch      28    1.8%   → ERROR
 注：`mt_H6LlpWgEYS` 被判为一致是**正确**的 —— 它的问题在 description 与
 assessmentPrompt 之间，不在 name 与 description 之间，因此刻意没进 ground truth。
 
+## 生成流水线首次真实运行（2026-07-26，deepseek-v4-flash）
+
+3 条课标条目 → 94 秒 → 4 节点 1 边，0 error / 3 warning。产出率不高，但**每一条
+没能进去的都有账可查**（`dropped.json` 13 条）。真实数据一跑就暴露了单测覆盖不到的东西：
+
+**① 忠实度判定器第一次跑就抓到了真问题。** `小数的意义` 这个节点被 fidelity 判否：
+原文只有「能理解小数的意义」，而模型的描述写成了「小数是**十进制分数**的另一种表示
+形式，知道各数位的**位值**含义」—— 这两个概念原文里没有，是模型自己加的。这正是
+这一层存在的理由。
+
+**② 但淘汰会制造孤儿，流水线对此毫无感知。** `小数的意义` 是最基础的那个节点，
+它被淘汰后，`小数大小的比较`、`简单的小数加减运算` 全成了孤儿（两条 `ISOLATED_TOPIC`）。
+**没有任何机制说「这次淘汰孤立了 N 个后继」** —— 这是跨层的语义缺口，不是某一层的 bug。
+
+**③ 剪枝没反推 `CYCLE`，真实数据当场证实。** 模型对两个**同年级**节点提出了双向边
+（`万以内数的认识与读写` ↔ `用数描述事物的多少`）。剪枝规则只反推了 `GRADE_INVERSION`
+（前置年级不得晚于后继），而同年级互为候选是允许的 —— 这次是 edge judge 把两条都否了
+才没成环，**靠判定器兜住而不是靠剪枝挡住**。
+
+**④ 留痕机制反过来误导了人。** 末尾报告打印 `CONSISTENCY_SKIPPED`（未提供 judge，
+已跳过名实一致校验），但 review 层**明明跑过** name judge —— 是最后那次 `run_all`
+不知情。这条恰恰是本项目最在意的机制自己出的岔子。
+
+**⑤ 一条真实抽取失败**：`分数` 那条产出零草稿（`NO_DRAFTS`），源文本明明有内容。
+好在没有静默。
+
 ## 学到什么
 
 - **规则能查的和查不了的，要分开设计。** 结构层（环、悬挂、单调性）纯规则即可，
@@ -174,6 +224,16 @@ assessmentPrompt 之间，不在 name 与 description 之间，因此刻意没�
   **ground truth 的样本分布决定了你能发现什么**：全是极端案例就测不出边界在哪。
 - **"跳过"必须留痕。** 不传 judge 时产出 `CONSISTENCY_SKIPPED` 警告而非静默通过 ——
   否则"CI 绿了"会被读成"全都查过了"，这正是 Marble 让人误判其数据质量的方式。
+- **原则会在接缝处被稀释。** 六层各自都老老实实记了 `DropRecord`，`review.py` 甚至为
+  丢边写了完整的 `UNKNOWN_REVIEW_TARGET` 记账 —— 但编排层一行 dict comprehension
+  的预过滤让那段代码**永不执行**，真正丢边的地方一声不吭。**记账代码写在了走不到的
+  分支上。** 逐层审查看不见这个，因为它不在任何一层里。修法之外更重要的是：
+  把原则写成**跨层守恒断言**（最终产出 + 全部 DropRecord ≡ 全部输入），
+  让"没有静默跳过"从口号变成会失败的测试。
+- **fake 喂完美输入，是测试套件最大的系统性盲区。** 159 个测试里，每层的 fake 都给
+  自己喂本层的理想输入：extract 的 fake 从不返回倒挂年级，edges 的 fake 从不返回重复边，
+  端到端的 fake 让每个 judge 都点头。**没有一个测试跑过"部分成功 + 部分失败"** ——
+  而那才是真实运行的常态。四个 Critical 全部落在这个盲区里。
 - **跑真实数据是最好的测试。** 单测全绿之后跑 Marble，当场暴露两个 bug：
   报告按 code 分组导致 error 被藏进 warning 组；适配器漏映射 standards
   导致对齐率虚报成 0%。两个都是先补失败测试再修的。
@@ -186,10 +246,17 @@ assessmentPrompt 之间，不在 name 与 description 之间，因此刻意没�
    Marble 抽样 124 个 0 失败
 3. ✅ ~~定死"范围不匹配算不算名实不符"~~ —— 拆成三档判定 / 两级严重性，
    ground truth 扩到 16 条，全量 1590 节点跑出 28 ERROR + 108 WARNING
-4. 生成流水线（多 agent 抽取 + 交叉审核），产出第一批「数与代数」节点 ——
-   其"交叉审核"层复用这套 judge + ground truth 基建，且 Anthropic/DeepSeek
-   两个不同训练谱系的 judge 正好当独立投票者（同族模型误判高度相关，投票会失效）
-5. MCP server，把图暴露给 agent
+4. ✅ ~~生成流水线骨架~~ —— 六层纯 DAG 工作流，159 测试，已接真模型端到端跑通
+5. **接真模型上量前必须先修**（首次真实运行暴露，见上一节）：
+   - 剪枝反推 `CYCLE`：同年级互为候选会产出双向边，目前靠 judge 兜住而非剪枝挡住
+   - 淘汰制造孤儿无感知：基础节点被淘汰后，后继静默失去前置
+   - `run_all` 不知道 review 层已跑过 name judge，误报 `CONSISTENCY_SKIPPED`
+   - 补重试/退避与 `--from <stage>` 重入（设计文档已写、尚未实现；
+     没有重试则瞬时错误持续侵蚀产出率，没有重入则任何中断都要从头烧钱）
+   - `candidate_pairs` 是 O(n²) 且每对跑 `SequenceMatcher`，上量会撞墙
+6. 配 `ANTHROPIC_API_KEY`，把交叉审核换成跨训练谱系双票 ——
+   现在是同族（flash + pro），误判高度相关，投两次约等于投一次
+7. MCP server，把图暴露给 agent
 
 > 法律定性（课标著作权，`docs/feasibility-analysis.md`）只卡"大规模生成 + 对外发布"；
 > 本地自用的流水线跑通不受影响。
