@@ -28,7 +28,16 @@ MAX_GRADE_GAP = 2
 
 
 def candidate_prerequisites(drafts: list[TopicDraft]) -> dict[str, list[TopicDraft]]:
-    """候选前置：年级不晚于目标，且跨度不超过 MAX_GRADE_GAP。"""
+    """候选前置：年级不晚于目标，且跨度不超过 MAX_GRADE_GAP。
+
+    **同年级只保留单向**（按 draft_id 字典序）。理由：同年级互为候选时，
+    模型会对两个节点各点一次头，产出 A→B 且 B→A 的双向边，直接触发校验层的
+    CYCLE（ERROR），整批产出被自己的 CI 拒掉。首次真实运行已实测到这一幕
+    ——当时是 edge judge 把两条都否了才侥幸没成环，靠判定器兜住而不是靠剪枝挡住。
+
+    按 draft_id 定方向是**取舍不是定论**：简单、确定、零额外调用，
+    但方向可能与真实先修关系相反。替代方案是让模型选方向（多一次调用）。
+    """
     candidates: dict[str, list[TopicDraft]] = {}
     for target in drafts:
         candidates[target.draft_id] = [
@@ -37,6 +46,11 @@ def candidate_prerequisites(drafts: list[TopicDraft]) -> dict[str, list[TopicDra
             if other.draft_id != target.draft_id
             and other.content.grade_start <= target.content.grade_start
             and target.content.grade_start - other.content.grade_start <= MAX_GRADE_GAP
+            # 同年级：只有 draft_id 在前的能当前置，断掉反向候选
+            and not (
+                other.content.grade_start == target.content.grade_start
+                and other.draft_id > target.draft_id
+            )
         ]
     return candidates
 

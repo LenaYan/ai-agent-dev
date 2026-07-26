@@ -56,13 +56,25 @@ def test_candidates_exclude_gaps_beyond_the_limit():
     assert candidate_prerequisites([early, far])["b"] == []
 
 
-def test_same_grade_drafts_are_mutual_candidates():
+def test_same_grade_candidates_are_one_directional():
+    """同年级互为候选会让模型产出双向边 —— 真实运行已实测到。
+    剪枝直接断掉一个方向：只有 draft_id 字典序在前的才能当后者的前置。"""
     left, right = _draft("a", grade=4), _draft("b", grade=4)
 
     candidates = candidate_prerequisites([left, right])
 
-    assert [c.draft_id for c in candidates["a"]] == ["b"]
     assert [c.draft_id for c in candidates["b"]] == ["a"]
+    assert candidates["a"] == []
+
+
+def test_same_grade_direction_is_stable_regardless_of_input_order():
+    """方向由 draft_id 决定，与输入顺序无关 —— 否则同一份数据两次跑出不同的图。"""
+    left, right = _draft("a", grade=4), _draft("b", grade=4)
+
+    reversed_order = candidate_prerequisites([right, left])
+
+    assert [c.draft_id for c in reversed_order["b"]] == ["a"]
+    assert reversed_order["a"] == []
 
 
 def test_a_draft_is_never_its_own_candidate():
