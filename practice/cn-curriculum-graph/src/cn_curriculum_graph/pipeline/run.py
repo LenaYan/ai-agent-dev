@@ -22,8 +22,6 @@ from cn_curriculum_graph.pipeline import io
 from cn_curriculum_graph.pipeline import review as review_mod
 from cn_curriculum_graph.pipeline.models import (
     Chunk,
-    DropRecord,
-    ProposedEdge,
     TargetedEdge,
     TopicDraft,
 )
@@ -110,50 +108,25 @@ def run_pipeline(
     io.append_drops(drops_path, draft_review.drops)
     kept_ids = {d.draft_id for d in draft_review.kept}
 
-    # Critical C2 的修复点：上面这个预过滤（目标被淘汰 / 前置被淘汰）曾经是
-    # 一段无留痕的 dict comprehension。讽刺的是 review.py 的 review_edges 为
-    # "目标不在 drafts_by_id" 精心写了 UNKNOWN_REVIEW_TARGET 记账，但正因为
-    # 这里已经先把淘汰目标的边过滤掉了，那条记账路径在真实调用里永远碰不到
-    # ——记账代码写在了走不到的分支上，真正丢边的地方反而一声不吭。
-    # 改成显式循环，两种情况各自留一条 DropRecord，ref 用
-    # "{target}<-{prerequisite}" 定位到具体是哪条边。
-    surviving_edges: dict[str, list[ProposedEdge]] = {}
-    edge_prefilter_drops: list[DropRecord] = []
-    for target, group in proposed.items():
-        if target not in kept_ids:
-            for e in group:
-                edge_prefilter_drops.append(
-                    DropRecord(
-                        stage="review",
-                        ref=f"{target}<-{e.prerequisite_draft_id}",
-                        reason="EDGE_TARGET_REJECTED",
-                        detail=f"目标 draft {target} 被 review 淘汰，指向它的边一并丢弃",
-                    )
-                )
-            continue
-        surviving = []
-        for e in group:
-            if e.prerequisite_draft_id in kept_ids:
-                surviving.append(e)
-            else:
-                edge_prefilter_drops.append(
-                    DropRecord(
-                        stage="review",
-                        ref=f"{target}<-{e.prerequisite_draft_id}",
-                        reason="EDGE_PREREQUISITE_REJECTED",
-                        detail=(
-                            f"前置 draft {e.prerequisite_draft_id} 被 review 淘汰，"
-                            f"边 {target}<-{e.prerequisite_draft_id} 丢弃"
-                        ),
-                    )
-                )
-        surviving_edges[target] = surviving
+    # 边预过滤：逻辑抽进 review.filter_edges_by_kept_drafts，两个编排实现共用，
+    # 避免复制一份后改一处漏一处
+    surviving_edges, edge_prefilter_drops = review_mod.filter_edges_by_kept_drafts(
+        proposed, kept_ids
+    )
     io.append_drops(drops_path, edge_prefilter_drops)
 
     edge_review = review_mod.review_edges(
         {d.draft_id: d for d in draft_review.kept}, surviving_edges, deps.edge_judges
     )
     io.append_drops(drops_path, edge_review.drops)
+
+    # 淘汰会制造孤儿：原本有前置的节点，前置全被淘汰后就静默失去了依赖。
+    # 只记账不丢弃 —— 节点本身没问题，问题在于它的前置没了。
+    io.append_drops(
+        drops_path,
+        review_mod.detect_orphans(draft_review.kept, proposed, edge_review.kept_edges),
+    )
+
     io.write_stage(out_dir / "05-reviewed.json", draft_review.kept)
     io.write_stage(
         out_dir / "review-log.json", draft_review.outcomes + edge_review.outcomes
@@ -176,7 +149,10 @@ def run_pipeline(
     (out_dir / "graph.json").write_text(
         graph.model_dump_json(indent=2, exclude_none=False) + "\n", encoding="utf-8"
     )
-    findings = run_all(graph)
+    # review 层已经用 name judge 跑过名实一致，把它传给 run_all，
+    # 否则最终报告会打印 CONSISTENCY_SKIPPED 说"已跳过"——
+    # 这条留痕机制自己出的岔子，比不留痕更误导人。
+    findings = run_all(graph, judge=deps.name_judges[0] if deps.name_judges else None)
 
     # 空产出兜底：这条检查刻意放在 run_pipeline 而不是校验层。
     # 校验层（validators/coverage.py 等）的职责是"校验一份已有的图"，

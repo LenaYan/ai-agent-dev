@@ -346,3 +346,76 @@ def review_edges(
                 )
 
     return ReviewResult(kept_edges=kept_edges, outcomes=outcomes, drops=drops)
+
+
+def filter_edges_by_kept_drafts(
+    proposed: dict[str, list[ProposedEdge]], kept_ids: set[str]
+) -> tuple[dict[str, list[ProposedEdge]], list[DropRecord]]:
+    """审核淘汰节点后，剔除两端不再存活的边，**每条都留痕**。
+
+    这段逻辑原先内联在 run_pipeline 里。抽出来是因为它是流水线语义而非编排
+    机制：LangGraph 版必须行为完全一致，复制一份必然改一处漏一处。
+    """
+    surviving: dict[str, list[ProposedEdge]] = {}
+    drops: list[DropRecord] = []
+
+    for target, group in proposed.items():
+        if target not in kept_ids:
+            drops += [
+                DropRecord(
+                    stage="review",
+                    ref=f"{target}<-{e.prerequisite_draft_id}",
+                    reason="EDGE_TARGET_REJECTED",
+                    detail=f"目标 draft {target} 被 review 淘汰，指向它的边一并丢弃",
+                )
+                for e in group
+            ]
+            continue
+
+        kept: list[ProposedEdge] = []
+        for e in group:
+            if e.prerequisite_draft_id in kept_ids:
+                kept.append(e)
+            else:
+                drops.append(
+                    DropRecord(
+                        stage="review",
+                        ref=f"{target}<-{e.prerequisite_draft_id}",
+                        reason="EDGE_PREREQUISITE_REJECTED",
+                        detail=(
+                            f"前置 draft {e.prerequisite_draft_id} 被 review 淘汰，"
+                            f"边 {target}<-{e.prerequisite_draft_id} 丢弃"
+                        ),
+                    )
+                )
+        surviving[target] = kept
+
+    return surviving, drops
+
+
+def detect_orphans(
+    kept_drafts: list[TopicDraft],
+    proposed_before: dict[str, list[ProposedEdge]],
+    kept_edges: dict[str, list[ProposedEdge]],
+) -> list[DropRecord]:
+    """找出"原本有前置、因本次淘汰而失去全部前置"的节点。
+
+    只记账不丢弃：这些节点本身没问题，问题在于它们的前置没了。校验层的
+    ISOLATED_TOPIC 只说"这个节点没有边"，说不出"它本来有、是被这次淘汰弄没的"
+    —— 后者才是可行动的信息（该去看 dropped.json 里那个被淘汰的前置该不该淘汰）。
+    """
+    drops: list[DropRecord] = []
+    for draft in kept_drafts:
+        before = proposed_before.get(draft.draft_id, [])
+        after = kept_edges.get(draft.draft_id, [])
+        if before and not after:
+            lost = ", ".join(e.prerequisite_draft_id for e in before)
+            drops.append(
+                DropRecord(
+                    stage="review",
+                    ref=draft.draft_id,
+                    reason="ORPHANED_BY_REJECTION",
+                    detail=f"原有前置 [{lost}] 全部被淘汰，该节点现已无前置",
+                )
+            )
+    return drops

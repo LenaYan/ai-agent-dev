@@ -15,6 +15,8 @@ from cn_curriculum_graph.pipeline.models import DraftContent, ProposedEdge, Topi
 from cn_curriculum_graph.pipeline.review import (
     FIDELITY_TOOL_NAME,
     DeepSeekFidelityJudge,
+    detect_orphans,
+    filter_edges_by_kept_drafts,
     review_drafts,
     review_edges,
 )
@@ -296,3 +298,65 @@ def test_deepseek_fidelity_judge_shows_both_description_and_source_span():
     assert "理解小数表示十进制分数" in payload
     assert "能理解小数的意义" in payload
     assert recorder["tool_choice"] == {"type": "tool", "name": FIDELITY_TOOL_NAME}
+
+
+def test_filter_edges_records_target_rejected():
+    proposed = {"a": [ProposedEdge(prerequisite_draft_id="b", strength="hard", reason="因")]}
+
+    surviving, drops = filter_edges_by_kept_drafts(proposed, kept_ids={"b"})
+
+    assert surviving == {}
+    assert drops[0].reason == "EDGE_TARGET_REJECTED"
+    assert drops[0].ref == "a<-b"
+
+
+def test_filter_edges_records_prerequisite_rejected():
+    proposed = {"a": [ProposedEdge(prerequisite_draft_id="b", strength="hard", reason="因")]}
+
+    surviving, drops = filter_edges_by_kept_drafts(proposed, kept_ids={"a"})
+
+    assert surviving == {"a": []}
+    assert drops[0].reason == "EDGE_PREREQUISITE_REJECTED"
+    assert drops[0].ref == "a<-b"
+
+
+def test_filter_edges_keeps_both_ends_alive():
+    proposed = {"a": [ProposedEdge(prerequisite_draft_id="b", strength="hard", reason="因")]}
+
+    surviving, drops = filter_edges_by_kept_drafts(proposed, kept_ids={"a", "b"})
+
+    assert [e.prerequisite_draft_id for e in surviving["a"]] == ["b"]
+    assert drops == []
+
+
+def test_detect_orphans_flags_a_draft_that_lost_all_prerequisites():
+    """基础节点被淘汰后，后继静默失去全部前置 —— 真实运行实测到的语义缺口。"""
+    survivor = _draft("child")
+    proposed_before = {"child": [ProposedEdge(prerequisite_draft_id="base", strength="hard", reason="因")]}
+
+    drops = detect_orphans([survivor], proposed_before, kept_edges={"child": []})
+
+    assert len(drops) == 1
+    assert drops[0].reason == "ORPHANED_BY_REJECTION"
+    assert drops[0].ref == "child"
+    assert "base" in drops[0].detail
+
+
+def test_detect_orphans_ignores_drafts_that_never_had_prerequisites():
+    """最低年级节点本来就没有前置，不算孤儿 —— 否则每次跑都刷一堆噪声。"""
+    survivor = _draft("root")
+
+    assert detect_orphans([survivor], proposed_before={"root": []}, kept_edges={"root": []}) == []
+
+
+def test_detect_orphans_ignores_drafts_that_kept_at_least_one_prerequisite():
+    survivor = _draft("child")
+    proposed_before = {
+        "child": [
+            ProposedEdge(prerequisite_draft_id="gone", strength="hard", reason="因"),
+            ProposedEdge(prerequisite_draft_id="alive", strength="soft", reason="因"),
+        ]
+    }
+    kept = {"child": [ProposedEdge(prerequisite_draft_id="alive", strength="soft", reason="因")]}
+
+    assert detect_orphans([survivor], proposed_before, kept_edges=kept) == []

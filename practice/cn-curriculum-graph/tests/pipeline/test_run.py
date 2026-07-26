@@ -72,6 +72,17 @@ def _fake_deps() -> PipelineDeps:
     )
 
 
+def _deps_rejecting(rejected_name: str) -> PipelineDeps:
+    """除指定名称外全部通过 fidelity 的 deps，用于制造"基础节点被淘汰"场景。"""
+    deps = _fake_deps()
+    deps.fidelity_judges = [
+        lambda d: Vote(
+            reviewer="fake", approved=d.content.name != rejected_name, reason="测试"
+        )
+    ]
+    return deps
+
+
 def test_end_to_end_produces_a_graph_that_passes_validation(tmp_path):
     source = tmp_path / "source" / "math.md"
     source.parent.mkdir(parents=True)
@@ -527,3 +538,37 @@ def test_normal_generation_does_not_emit_empty_generation_finding(tmp_path):
     )
 
     assert not any(f.code == "EMPTY_GENERATION" for f in findings)
+
+
+def test_pipeline_reports_orphans_created_by_review(tmp_path):
+    """端到端：基础节点被淘汰后，后继要被标记为孤儿。
+
+    本文件的 `_fake_deps` 的 extractor 是按 `chunk.standard_code` 定死名字的
+    （3.1.1 -> "认识100以内的数"，其余 -> "100以内加减法"），源文件里的
+    "甲条目"/"乙条目" 文本本身不影响抽出的 draft 名字，只要编号是 3.1.1/3.1.2
+    即可触发这两个固定名字。brief 原始草稿写的是否决 "甲知识点"，但那个
+    名字在这份 fixture 下不对应任何真实 draft、永远不会被否决 —— 我按实际
+    会被抽出的 draft 名字改成否决 "认识100以内的数"（它是 "100以内加减法"
+    唯一的前置），行为要求（基础节点淘汰后，后继变孤儿）不变。
+    """
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "m.md").write_text("3.1.1 甲条目。\n\n3.1.2 乙条目。\n", encoding="utf-8")
+    out = tmp_path / "out"
+
+    run_pipeline(source, out, _deps_rejecting("认识100以内的数"), model_id="fake", curriculum="c")
+
+    drops = json.loads((out / "dropped.json").read_text(encoding="utf-8"))
+    assert any(d["reason"] == "ORPHANED_BY_REJECTION" for d in drops)
+
+
+def test_pipeline_does_not_claim_consistency_was_skipped(tmp_path):
+    """review 层明明跑过 name judge，最终报告却说『已跳过』—— 这条留痕机制
+    自己出的岔子，比不留痕更误导人。"""
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "m.md").write_text("3.1.1 甲条目。\n", encoding="utf-8")
+
+    findings = run_pipeline(source, tmp_path / "out", _fake_deps(), model_id="fake", curriculum="c")
+
+    assert not any(f.code == "CONSISTENCY_SKIPPED" for f in findings)
