@@ -600,6 +600,69 @@ def test_normal_generation_does_not_emit_empty_generation_finding(tmp_path, engi
     assert not any(f.code == "EMPTY_GENERATION" for f in findings)
 
 
+def test_cli_default_thread_id_is_derived_from_source_and_out_not_a_constant(
+    tmp_path, monkeypatch
+):
+    """S1：CLI 从不传 thread_id 时，run_pipeline_lg 曾经默认落到常量
+    "default"——只要两次实验复用同一个 --checkpoint 文件，就会天然共享
+    同一个 thread，S1 的静默串号问题正是从这里长出来的。CLI 现在应当由
+    --source/--out 的绝对路径派生出稳定摘要：不同实验（不同 source/out）
+    天然落进不同 thread，同一实验重跑仍能派生出同一个 thread_id、正常续跑。
+    """
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "x")
+    captured: list[dict] = []
+
+    def fake_run_pipeline_lg(source_dir, out_dir, deps, model_id, curriculum, checkpoint_db=None, thread_id="default"):
+        captured.append({"thread_id": thread_id})
+        return []
+
+    import cn_curriculum_graph.pipeline.graph as graph_mod
+    from cn_curriculum_graph.pipeline import run as run_mod
+
+    monkeypatch.setattr(graph_mod, "run_pipeline_lg", fake_run_pipeline_lg)
+
+    src_a = tmp_path / "srcA"
+    src_a.mkdir()
+    out_a = tmp_path / "outA"
+    run_mod.main(
+        [
+            "--engine", "langgraph",
+            "--source", str(src_a),
+            "--out", str(out_a),
+            "--checkpoint", str(tmp_path / "cp.sqlite"),
+        ]
+    )
+
+    src_b = tmp_path / "srcB"
+    src_b.mkdir()
+    out_b = tmp_path / "outB"
+    run_mod.main(
+        [
+            "--engine", "langgraph",
+            "--source", str(src_b),
+            "--out", str(out_b),
+            "--checkpoint", str(tmp_path / "cp.sqlite"),
+        ]
+    )
+
+    assert len(captured) == 2
+    thread_a, thread_b = captured[0]["thread_id"], captured[1]["thread_id"]
+    assert thread_a != "default", "默认 thread_id 不该是常量，否则不同实验会共享同一个 thread"
+    assert thread_b != "default"
+    assert thread_a != thread_b, "不同 source/out 应派生出不同的 thread_id"
+
+    # 同一实验（相同 source/out）重跑应派生出相同 thread_id，断点续跑能力不受影响
+    run_mod.main(
+        [
+            "--engine", "langgraph",
+            "--source", str(src_a),
+            "--out", str(out_a),
+            "--checkpoint", str(tmp_path / "cp.sqlite"),
+        ]
+    )
+    assert captured[2]["thread_id"] == thread_a
+
+
 @ENGINES
 def test_pipeline_reports_orphans_created_by_review(tmp_path, engine):
     """端到端：基础节点被淘汰后，后继要被标记为孤儿。

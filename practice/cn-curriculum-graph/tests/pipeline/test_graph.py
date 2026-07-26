@@ -325,6 +325,53 @@ def test_checkpoint_db_parent_dir_is_created_if_missing(tmp_path):
     assert (tmp_path / "out" / "graph.json").exists()
 
 
+def test_resume_with_different_source_or_out_raises_instead_of_silently_reusing_old_dirs(
+    tmp_path, monkeypatch
+):
+    """S1 Critical：resume 时（同一 thread_id、同一 checkpoint db）若这次调用的
+    source_dir/out_dir 与 checkpoint 里存的不一致，必须 raise，绝不能静默沿用
+    checkpoint 里的旧值——否则实验 B 传的 srcB/outB 会被整个丢弃，产物全部
+    落进实验 A 的 outA，outB 里什么都没有却退出码 0。
+
+    先用 srcA/outA 制造一个"未完成的 checkpoint"（edges 层崩溃），
+    再用完全不同的 srcB/outB、同一 thread_id/checkpoint db 去 resume。
+    """
+    source_a = tmp_path / "srcA"
+    source_a.mkdir()
+    (source_a / "m.md").write_text("3.1.1 甲。\n\n3.1.2 乙。\n", encoding="utf-8")
+    out_a = tmp_path / "outA"
+    db = tmp_path / "cp.sqlite"
+
+    def boom(drafts, proposer):
+        raise _Rate("模拟 edges 层崩溃，制造一个未完成的 checkpoint")
+
+    monkeypatch.setattr(graph_mod.edges_mod, "propose_all", boom)
+
+    with pytest.raises(Exception):
+        run_pipeline_lg(
+            source_a, out_a, _fake_deps(), model_id="fake",
+            curriculum="c", checkpoint_db=db, thread_id="shared",
+        )
+
+    monkeypatch.undo()
+
+    source_b = tmp_path / "srcB"
+    source_b.mkdir()
+    (source_b / "m.md").write_text("3.1.1 丙。\n\n3.1.2 丁。\n", encoding="utf-8")
+    out_b = tmp_path / "outB"
+
+    with pytest.raises(ValueError, match="source_dir"):
+        run_pipeline_lg(
+            source_b, out_b, _fake_deps(), model_id="fake",
+            curriculum="c", checkpoint_db=db, thread_id="shared",
+        )
+
+    # 静默沿用旧目录的坏行为不该再发生：outB 不该被写入任何产物，
+    # outA 里的产物也不该被这次用 srcB 发起的调用污染
+    assert not (out_b / "graph.json").exists()
+    assert "丙" not in (out_a / "01-chunks.json").read_text(encoding="utf-8")
+
+
 def test_assemble_retry_via_checkpoint_does_not_duplicate_drops(tmp_path, monkeypatch):
     """锁死本任务描述的交互风险：node_assemble 若在 assemble_mod.assemble/
     run_all 之前就把 dup_drops 落盘，assemble 这一步一旦失败（该 Node 没有

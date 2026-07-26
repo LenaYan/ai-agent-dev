@@ -489,6 +489,20 @@ def run_pipeline_lg(
     包进已有 async 上下文（包括未来可能的 server 化）的用法都需要注意这一点
     —— 届时应改为直接 `await` 内部的 `_ainvoke()` 逻辑，而不是再包一层
     `asyncio.run`。
+
+    **S1 修复（Critical）**：resume 分支此前传 `None` 给 `ainvoke`，这意味着
+    本次调用的 `source_dir`/`out_dir`/`model_id`/`curriculum`（连同 CLI 的
+    `--source`/`--out`）被整个丢弃、且没有任何一致性校验——只要两次调用
+    复用同一个 `(checkpoint_db, thread_id)`，第二次调用不管传了什么参数，
+    实际跑的都是 checkpoint 里存的第一次那一份，产物落进第一次的 `out_dir`，
+    第二次自己的 `out_dir` 全程不会被写入任何东西，却能拿到退出码 0（已用
+    `test_resume_with_different_source_or_out_raises_instead_of_silently_
+    reusing_old_dirs` 实测复现）。这在下一个任务——多组受控实验——里是
+    致命的：只要实验脚本复用一个 checkpoint 路径，各组会互相污染且不报错。
+
+    修复：resume 前用 `_ensure_consistent_resume` 校验 checkpoint 里存的
+    四个字段与本次调用参数是否一致，不一致就 raise ValueError，明确指出
+    冲突字段和两边各自的值，绝不静默沿用旧参数。
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     if checkpoint_db is not None:
@@ -514,7 +528,42 @@ def run_pipeline_lg(
             # LangGraph 会从上次中断处继续，而不是从头再来
             existing = await app.aget_state(config)
             resume = existing.next != ()
-            return await app.ainvoke(None if resume else payload, config=config, context=deps)
+            if resume:
+                _ensure_consistent_resume(existing.values, payload, thread_id=thread_id)
+                return await app.ainvoke(None, config=config, context=deps)
+            return await app.ainvoke(payload, config=config, context=deps)
 
     result = asyncio.run(_ainvoke())
     return result["findings"]
+
+
+# S1 修复：resume 前校验的字段——这四个字段一旦跟 checkpoint 里存的不一致，
+# 说明调用方其实是想跑一次不同的实验，而不是续跑同一次。
+_RESUME_CONSISTENCY_FIELDS = ("source_dir", "out_dir", "model_id", "curriculum")
+
+
+def _ensure_consistent_resume(stored: dict, payload: dict, *, thread_id: str) -> None:
+    """resume 前的一致性校验：checkpoint 里存的字段必须与本次调用参数一致。
+
+    不一致就 raise，绝不静默沿用 checkpoint 里的旧值——静默沿用正是 S1
+    Critical 的根源：`thread_id` 相同、`checkpoint_db` 相同，但
+    `source_dir`/`out_dir` 完全不同的两次调用，此前会被当成"同一次实验的
+    续跑"处理，第二次调用的参数被整个丢弃。
+    """
+    mismatches = [
+        (field, stored.get(field), payload[field])
+        for field in _RESUME_CONSISTENCY_FIELDS
+        if stored.get(field) != payload[field]
+    ]
+    if not mismatches:
+        return
+    detail = "；".join(
+        f"{field}: checkpoint 里存的是 {stored_value!r}，本次调用传的是 {payload_value!r}"
+        for field, stored_value, payload_value in mismatches
+    )
+    raise ValueError(
+        f"checkpoint（thread_id={thread_id!r}）与本次调用参数不一致，"
+        f"拒绝静默沿用旧参数续跑——{detail}。"
+        "如果确实想跑一次不同的实验，请换一个 thread_id 或 checkpoint_db；"
+        "如果只是想续跑同一次实验，请确认 --source/--out 与上次一致。"
+    )

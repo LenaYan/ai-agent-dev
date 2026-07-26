@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -183,6 +184,25 @@ def run_pipeline(
     return findings
 
 
+def derive_thread_id(source: Path, out: Path) -> str:
+    """checkpoint 续跑用的默认 thread_id（S1 修复）。
+
+    CLI 此前从不传 `thread_id`，`run_pipeline_lg` 的默认值是常量
+    `"default"`——这意味着任何两次复用同一个 `--checkpoint` 文件的调用，
+    不论 `--source`/`--out` 是什么，都会落进同一个 thread，被 LangGraph
+    当成"同一次实验的续跑"。下一个任务要跑多组受控实验，只要实验脚本
+    复用一个 checkpoint 路径，各组就会互相污染（参见 graph.py 的
+    `_ensure_consistent_resume`：那是第二道防线，这里是从源头让不同实验
+    天然落进不同 thread，两者互补而非互斥）。
+
+    用 `--source`/`--out` 的绝对路径摘要而非常量：同一实验（相同
+    source/out）重跑会派生出相同 thread_id，断点续跑能力不受影响；
+    不同实验的 thread_id 天然不同，不需要用户自己记得传 --thread-id。
+    """
+    key = f"{Path(source).resolve()}|{Path(out).resolve()}"
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="ccg-generate", description="从课标原文生成知识依赖图"
@@ -204,6 +224,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--checkpoint", type=Path, default=None, help="checkpoint 数据库路径（仅 langgraph）"
     )
+    parser.add_argument(
+        "--thread-id",
+        dest="thread_id",
+        default=None,
+        help=(
+            "checkpoint 续跑用的会话标识（仅 langgraph）；不传则由 --source/--out "
+            "派生出稳定摘要，而不是写死的常量——不同实验天然落进不同 thread，"
+            "同一实验（相同 --source/--out）重跑仍能派生出同一个 thread_id 正常续跑"
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not os.environ.get("DEEPSEEK_API_KEY"):
@@ -214,14 +244,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.engine == "langgraph":
         from cn_curriculum_graph.pipeline.graph import run_pipeline_lg
 
+        thread_id = args.thread_id or derive_thread_id(args.source, args.out)
         findings = run_pipeline_lg(
             args.source, args.out, build_deepseek_deps(models),
             model_id=models[0], curriculum=args.curriculum,
             checkpoint_db=args.checkpoint,
+            thread_id=thread_id,
         )
     else:
         if args.checkpoint is not None:
             parser.error("--checkpoint 仅 --engine langgraph 支持（手写版没有重入能力，这正是对比要量的东西）")
+        if args.thread_id is not None:
+            parser.error("--thread-id 仅 --engine langgraph 支持")
         findings = run_pipeline(
             args.source, args.out, build_deepseek_deps(models),
             model_id=models[0], curriculum=args.curriculum,
