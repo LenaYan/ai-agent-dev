@@ -16,7 +16,13 @@ import os
 from typing import Any, Protocol
 
 from cn_curriculum_graph.judges.deepseek_judge import DEEPSEEK_BASE_URL
-from cn_curriculum_graph.pipeline.models import Chunk, DraftBatch, DropRecord, TopicDraft
+from cn_curriculum_graph.pipeline.models import (
+    PROGRAMMING_ERRORS,
+    Chunk,
+    DraftBatch,
+    DropRecord,
+    TopicDraft,
+)
 
 DEFAULT_MODEL = "deepseek-v4-flash"
 EXTRACT_TOOL_NAME = "record_topics"
@@ -86,6 +92,8 @@ def extract_all(
     for chunk in chunks:
         try:
             batch = extractor(chunk)
+        except PROGRAMMING_ERRORS:  # 程序 bug，不该伪装成 API 失败，直接冒泡
+            raise
         except Exception as exc:  # noqa: BLE001 —— 任何失败都只影响这一条
             drops.append(
                 DropRecord(
@@ -106,6 +114,26 @@ def extract_all(
             continue
 
         for index, content in enumerate(batch.drafts):
+            # DraftContent 只有 grade_start/grade_end 各自的 ge/le 边界，没有
+            # 顺序校验（那条顺序校验在对外 schema 的 Topic._grade_range_ordered
+            # 里，见 cn_curriculum_graph/models.py:114-120）——刻意不在这里给
+            # DraftContent 加 pydantic validator：那会让整个 DraftBatch.model_validate
+            # 失败，把同一 chunk 里其他合格的 draft 一起拖下水，与"单条失败不
+            # 中断整批"冲突。区间填反是 LLM 填数值区间最常见的错法之一，
+            # 必须单独拦下、单独丢弃，不能一路穿到 assemble 才崩掉整条流水线。
+            if content.grade_end < content.grade_start:
+                drops.append(
+                    DropRecord(
+                        stage="extract",
+                        ref=f"{chunk.id}-{index}",
+                        reason="GRADE_RANGE_INVERTED",
+                        detail=(
+                            f"{content.name}：grade_start={content.grade_start} > "
+                            f"grade_end={content.grade_end}"
+                        ),
+                    )
+                )
+                continue
             drafts.append(
                 TopicDraft(
                     draft_id=f"{chunk.id}-{index}",

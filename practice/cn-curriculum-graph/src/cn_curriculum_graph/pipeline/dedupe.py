@@ -16,7 +16,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ConfigDict
 
 from cn_curriculum_graph.judges.deepseek_judge import DEEPSEEK_BASE_URL
-from cn_curriculum_graph.pipeline.models import DropRecord, Merge, TopicDraft
+from cn_curriculum_graph.pipeline.models import PROGRAMMING_ERRORS, DropRecord, Merge, TopicDraft
 
 DEFAULT_MODEL = "deepseek-v4-flash"
 SAME_TOPIC_TOOL_NAME = "record_same_topic"
@@ -254,6 +254,8 @@ def dedupe(drafts: list[TopicDraft], judge: SameTopicJudge) -> DedupeResult:
 
         try:
             verdict = judge(by_id[left_id], by_id[right_id])
+        except PROGRAMMING_ERRORS:  # 程序 bug，不该伪装成 judge 服务失败，直接冒泡
+            raise
         except Exception as exc:  # noqa: BLE001 —— 单对失败不能中断整批
             drops.append(
                 DropRecord(

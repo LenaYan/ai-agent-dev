@@ -78,6 +78,39 @@ def test_a_failing_chunk_is_dropped_without_stopping_the_batch():
     assert "API 炸了" in drops[0].detail
 
 
+def test_extract_all_reraises_programming_errors_instead_of_recording_a_drop():
+    """AttributeError/TypeError/NameError/KeyError 是程序 bug，不该被当成 API
+    失败悄悄记进 dropped.json —— 那会把真实缺陷伪装成"这批数据不行"。"""
+
+    def extractor(chunk):
+        raise AttributeError("拼错了属性名")
+
+    import pytest
+
+    with pytest.raises(AttributeError, match="拼错了属性名"):
+        extract_all([_chunk()], extractor)
+
+
+def test_grade_range_inverted_draft_is_dropped_without_crashing_the_batch():
+    """DraftContent 只有 ge/le 边界，没有顺序校验 —— grade_end < grade_start
+    这种模型最常见的填反区间，必须在 extract 层单独丢弃该 draft 并记账，
+    而不是让它一路穿到 assemble 才用 pydantic ValidationError 炸掉整条流水线。
+    同一批次里其他合格的 draft 不受影响。"""
+
+    def extractor(chunk):
+        good = _content("甲")
+        bad = _content("乙").model_copy(update={"grade_start": 5, "grade_end": 3})
+        return DraftBatch(drafts=[good, bad])
+
+    drafts, drops = extract_all([_chunk()], extractor)
+
+    assert [d.content.name for d in drafts] == ["甲"]
+    assert len(drops) == 1
+    assert drops[0].stage == "extract"
+    assert drops[0].reason == "GRADE_RANGE_INVERTED"
+    assert "乙" in drops[0].detail
+
+
 def test_a_chunk_yielding_nothing_is_recorded():
     def extractor(chunk):
         return DraftBatch(drafts=[])

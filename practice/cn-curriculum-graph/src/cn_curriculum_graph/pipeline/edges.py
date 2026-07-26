@@ -14,6 +14,7 @@ from typing import Any, Protocol
 
 from cn_curriculum_graph.judges.deepseek_judge import DEEPSEEK_BASE_URL
 from cn_curriculum_graph.pipeline.models import (
+    PROGRAMMING_ERRORS,
     DropRecord,
     ProposedEdge,
     ProposedEdgeBatch,
@@ -128,6 +129,8 @@ def propose_all(
 
         try:
             batch = proposer(target, pool)
+        except PROGRAMMING_ERRORS:  # 程序 bug，不该伪装成 API 失败，直接冒泡
+            raise
         except Exception as exc:  # noqa: BLE001 —— 单个目标失败不影响其余
             drops.append(
                 DropRecord(

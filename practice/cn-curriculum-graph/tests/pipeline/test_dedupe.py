@@ -231,6 +231,22 @@ def test_judge_exception_records_a_drop_and_lets_other_pairs_proceed():
     assert "RuntimeError" in judge_fail_drops[0].detail
 
 
+def test_dedupe_reraises_programming_errors_instead_of_recording_a_drop():
+    """AttributeError/TypeError/NameError/KeyError 是程序 bug，不该被
+    SAME_TOPIC_JUDGE_FAILED 悄悄吞掉、伪装成 judge 服务失败。"""
+    left = _draft("a-1", "甲概念")
+    right = _draft("b-2", "完全不同的乙")
+    right.standard_codes = list(left.standard_codes)  # 强制配对
+
+    def buggy_judge(x, y):
+        raise KeyError("some_key")
+
+    import pytest
+
+    with pytest.raises(KeyError):
+        dedupe([left, right], buggy_judge)
+
+
 def test_unrelated_drafts_pass_through_untouched():
     drafts = [_draft("a-1", "小数的意义"), _draft("b-2", "三角形内角和")]
 

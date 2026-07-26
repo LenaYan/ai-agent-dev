@@ -11,6 +11,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from cn_curriculum_graph.models import GRADE_MAX, GRADE_MIN, Misconception, Strength, TopicType
 
+# 这四类异常几乎总是程序 bug（属性拼错、类型不对、变量未定义、字典键缺失），
+# 不该被各层"单条失败不中断整批"的 except Exception 悄悄吞掉、伪装成
+# "这条 API 调用失败了" —— 那会把真实缺陷藏进 dropped.json，永远没人发现。
+# 各层的批处理循环应先 `except PROGRAMMING_ERRORS: raise` 再 `except Exception`。
+PROGRAMMING_ERRORS: tuple[type[Exception], ...] = (AttributeError, TypeError, NameError, KeyError)
+
 
 class Chunk(BaseModel):
     """一条课标条目。编号在切分阶段就绑定，不交给模型 —— 见设计文档 §3.1。"""

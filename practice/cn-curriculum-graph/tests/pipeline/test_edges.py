@@ -142,6 +142,19 @@ def test_self_referencing_edge_is_dropped():
     assert "b" in drops[0].detail
 
 
+def test_propose_all_reraises_programming_errors_instead_of_recording_a_drop():
+    """AttributeError/TypeError/NameError/KeyError 是程序 bug，不该被
+    EDGES_FAILED 悄悄吞掉、伪装成 API 失败。"""
+
+    def buggy_proposer(target, candidates):
+        raise TypeError("参数类型不对")
+
+    import pytest
+
+    with pytest.raises(TypeError):
+        propose_all([_draft("a", 3), _draft("b", 4)], buggy_proposer)
+
+
 def test_edge_pointing_outside_the_candidate_pool_is_dropped():
     """c 是真实存在的草稿，但对 b 来说年级更晚，从未进入 b 的候选池。
 
