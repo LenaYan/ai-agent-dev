@@ -7,7 +7,7 @@
 
 import pytest
 
-from cn_curriculum_graph.pipeline.assemble import assemble, make_topic_id
+from cn_curriculum_graph.pipeline.assemble import assemble, dedupe_edges_by_pair, make_topic_id
 from cn_curriculum_graph.pipeline.models import DraftContent, ProposedEdge, TopicDraft
 
 
@@ -137,3 +137,54 @@ def test_each_topic_gets_its_own_provenance_object():
         assert prov.method == "llm-extract/deepseek-v4-flash"
         assert prov.review_status == "unreviewed"
         assert prov.confidence == 0.0
+
+
+# --- 待裁决 #5：同一 (target, prerequisite) 对给出 hard + soft 两条边，
+# 两条都会进 graph.json 的 dependencies，run_all 零 finding —— 这是对外
+# 产物的正确性缺陷。assemble() 本身签名不变（不加 DropRecord 通道），
+# 去重放在一个独立的纯函数里，由编排层在调用 assemble 之前调用并记账
+# （见 pipeline/run.py）。
+
+
+def test_dedupe_edges_by_pair_keeps_hard_over_soft():
+    edges = {
+        "b": [
+            ProposedEdge(prerequisite_draft_id="a", strength="soft", reason="有帮助"),
+            ProposedEdge(prerequisite_draft_id="a", strength="hard", reason="其实是必须的"),
+        ]
+    }
+
+    deduped, drops = dedupe_edges_by_pair(edges)
+
+    assert [e.strength for e in deduped["b"]] == ["hard"]
+    assert len(drops) == 1
+    assert drops[0].reason == "DUPLICATE_EDGE"
+    assert drops[0].ref == "b<-a"
+
+
+def test_dedupe_edges_by_pair_keeps_first_occurrence_on_tie():
+    edges = {
+        "b": [
+            ProposedEdge(prerequisite_draft_id="a", strength="hard", reason="第一条"),
+            ProposedEdge(prerequisite_draft_id="a", strength="hard", reason="第二条"),
+        ]
+    }
+
+    deduped, drops = dedupe_edges_by_pair(edges)
+
+    assert [e.reason for e in deduped["b"]] == ["第一条"]
+    assert len(drops) == 1
+
+
+def test_dedupe_edges_by_pair_leaves_unique_edges_untouched():
+    edges = {
+        "b": [
+            ProposedEdge(prerequisite_draft_id="a", strength="hard", reason="站得住"),
+            ProposedEdge(prerequisite_draft_id="c", strength="soft", reason="也站得住"),
+        ]
+    }
+
+    deduped, drops = dedupe_edges_by_pair(edges)
+
+    assert len(deduped["b"]) == 2
+    assert drops == []

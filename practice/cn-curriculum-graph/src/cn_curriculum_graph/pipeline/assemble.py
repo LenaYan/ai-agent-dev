@@ -15,7 +15,77 @@ from cn_curriculum_graph.models import (
     Standard,
     Topic,
 )
-from cn_curriculum_graph.pipeline.models import DraftContent, ProposedEdge, TopicDraft
+from cn_curriculum_graph.pipeline.models import DraftContent, DropRecord, ProposedEdge, TopicDraft
+
+_STRENGTH_RANK = {"soft": 0, "hard": 1}
+
+
+def dedupe_edges_by_pair(
+    kept_edges: dict[str, list[ProposedEdge]],
+) -> tuple[dict[str, list[ProposedEdge]], list[DropRecord]]:
+    """待裁决 #5 的修复：同一 (target_draft_id, prerequisite_draft_id) 若给出
+    多条边（典型情形是 hard + soft 各一条），不去重就都会进 graph.json 的
+    dependencies —— 这是对外产物的正确性缺陷，下游按边计数或建图的消费方
+    都会读错。
+
+    去重规则：hard 胜 soft（强依赖优先）；同强度保留先出现的。
+
+    **为什么不放进 assemble() 内部、而是单独一个函数**：assemble() 的签名是
+    `-> CurriculumGraph`，没有 DropRecord 通道，且它的既有设计哲学是"调用方
+    负责保证前置条件、assemble 只管报错，不做静默修正"（见 assemble() 里
+    "边引用未知 draft id 直接 raise" 的注释）。把去重悄悄塞进 assemble 内部、
+    不留痕迹，等于又制造一个"没有留痕的丢弃"，正是本项目要修的第一类问题。
+    所以选择在编排层（pipeline/run.py）调用 assemble 之前，用这个独立的纯
+    函数做去重并把丢弃的那条记成 DropRecord——assemble() 签名保持不变，
+    调用方（编排层）继续对"边已去重"这个前置条件负责。
+
+    在 draft_id 层面去重而非 assemble 内部的 topic_id 层面：两者等价（同一
+    draft_id 到同一 topic_id 是确定性映射），但在 draft_id 层面能在调用
+    assemble 之前就拿到 DropRecord，不用等 assemble 算出 topic_id 之后才能
+    定位。
+    """
+    deduped: dict[str, list[ProposedEdge]] = {}
+    drops: list[DropRecord] = []
+
+    for target_id, group in kept_edges.items():
+        by_prereq: dict[str, ProposedEdge] = {}
+        for edge in group:
+            prereq_id = edge.prerequisite_draft_id
+            pair_ref = f"{target_id}<-{prereq_id}"
+            existing = by_prereq.get(prereq_id)
+            if existing is None:
+                by_prereq[prereq_id] = edge
+                continue
+            if _STRENGTH_RANK[edge.strength] > _STRENGTH_RANK[existing.strength]:
+                # 新出现的更强（hard 胜 soft）—— 替换，丢弃原来那条较弱的
+                drops.append(
+                    DropRecord(
+                        stage="assemble",
+                        ref=pair_ref,
+                        reason="DUPLICATE_EDGE",
+                        detail=(
+                            f"重复边：保留 strength={edge.strength}（更强），"
+                            f"丢弃 strength={existing.strength}"
+                        ),
+                    )
+                )
+                by_prereq[prereq_id] = edge
+            else:
+                # 同强度或原来的更强 —— 保留先出现的，丢弃这条
+                drops.append(
+                    DropRecord(
+                        stage="assemble",
+                        ref=pair_ref,
+                        reason="DUPLICATE_EDGE",
+                        detail=(
+                            f"重复边：保留先出现的 strength={existing.strength}，"
+                            f"丢弃 strength={edge.strength}"
+                        ),
+                    )
+                )
+        deduped[target_id] = list(by_prereq.values())
+
+    return deduped, drops
 
 
 def make_topic_id(content: DraftContent) -> str:

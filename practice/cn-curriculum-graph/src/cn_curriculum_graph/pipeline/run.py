@@ -20,7 +20,13 @@ from cn_curriculum_graph.pipeline import edges as edges_mod
 from cn_curriculum_graph.pipeline import extract as extract_mod
 from cn_curriculum_graph.pipeline import io
 from cn_curriculum_graph.pipeline import review as review_mod
-from cn_curriculum_graph.pipeline.models import Chunk, TargetedEdge, TopicDraft
+from cn_curriculum_graph.pipeline.models import (
+    Chunk,
+    DropRecord,
+    ProposedEdge,
+    TargetedEdge,
+    TopicDraft,
+)
 from cn_curriculum_graph.runner import has_errors, run_all
 from cn_curriculum_graph.validators.base import Finding, Severity
 
@@ -103,11 +109,47 @@ def run_pipeline(
     )
     io.append_drops(drops_path, draft_review.drops)
     kept_ids = {d.draft_id for d in draft_review.kept}
-    surviving_edges = {
-        target: [e for e in group if e.prerequisite_draft_id in kept_ids]
-        for target, group in proposed.items()
-        if target in kept_ids
-    }
+
+    # Critical C2 的修复点：上面这个预过滤（目标被淘汰 / 前置被淘汰）曾经是
+    # 一段无留痕的 dict comprehension。讽刺的是 review.py 的 review_edges 为
+    # "目标不在 drafts_by_id" 精心写了 UNKNOWN_REVIEW_TARGET 记账，但正因为
+    # 这里已经先把淘汰目标的边过滤掉了，那条记账路径在真实调用里永远碰不到
+    # ——记账代码写在了走不到的分支上，真正丢边的地方反而一声不吭。
+    # 改成显式循环，两种情况各自留一条 DropRecord，ref 用
+    # "{target}<-{prerequisite}" 定位到具体是哪条边。
+    surviving_edges: dict[str, list[ProposedEdge]] = {}
+    edge_prefilter_drops: list[DropRecord] = []
+    for target, group in proposed.items():
+        if target not in kept_ids:
+            for e in group:
+                edge_prefilter_drops.append(
+                    DropRecord(
+                        stage="review",
+                        ref=f"{target}<-{e.prerequisite_draft_id}",
+                        reason="EDGE_TARGET_REJECTED",
+                        detail=f"目标 draft {target} 被 review 淘汰，指向它的边一并丢弃",
+                    )
+                )
+            continue
+        surviving = []
+        for e in group:
+            if e.prerequisite_draft_id in kept_ids:
+                surviving.append(e)
+            else:
+                edge_prefilter_drops.append(
+                    DropRecord(
+                        stage="review",
+                        ref=f"{target}<-{e.prerequisite_draft_id}",
+                        reason="EDGE_PREREQUISITE_REJECTED",
+                        detail=(
+                            f"前置 draft {e.prerequisite_draft_id} 被 review 淘汰，"
+                            f"边 {target}<-{e.prerequisite_draft_id} 丢弃"
+                        ),
+                    )
+                )
+        surviving_edges[target] = surviving
+    io.append_drops(drops_path, edge_prefilter_drops)
+
     edge_review = review_mod.review_edges(
         {d.draft_id: d for d in draft_review.kept}, surviving_edges, deps.edge_judges
     )
@@ -117,9 +159,19 @@ def run_pipeline(
         out_dir / "review-log.json", draft_review.outcomes + edge_review.outcomes
     )
 
+    # 待裁决 #5：同一 (target, prerequisite) 若被给出 hard + soft 两条边，
+    # assemble 之前先去重，hard 胜 soft，并把丢弃的那条记进 dropped.json ——
+    # 详见 assemble.dedupe_edges_by_pair 的 docstring（选择在编排层做，
+    # 而不是让 assemble 静默去重，是因为 assemble 没有 DropRecord 通道，
+    # 静默去重会又制造一个"没有留痕的丢弃"）。
+    deduped_edges, duplicate_edge_drops = assemble_mod.dedupe_edges_by_pair(
+        edge_review.kept_edges
+    )
+    io.append_drops(drops_path, duplicate_edge_drops)
+
     # 6 assemble + 校验
     graph = assemble_mod.assemble(
-        draft_review.kept, edge_review.kept_edges, model_id=model_id, curriculum=curriculum
+        draft_review.kept, deduped_edges, model_id=model_id, curriculum=curriculum
     )
     (out_dir / "graph.json").write_text(
         graph.model_dump_json(indent=2, exclude_none=False) + "\n", encoding="utf-8"

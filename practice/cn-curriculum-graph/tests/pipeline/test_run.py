@@ -6,6 +6,7 @@
 
 import json
 
+from cn_curriculum_graph.pipeline.dedupe import SameTopicVerdict
 from cn_curriculum_graph.pipeline.models import (
     DraftBatch,
     DraftContent,
@@ -24,7 +25,7 @@ SOURCE = """3.1.1 能认识并读写 100 以内的数。
 """
 
 
-def _content(name: str, grade: int, span: str) -> DraftContent:
+def _content(name: str, grade: int, span: str, evidence: list[str] | None = None) -> DraftContent:
     return DraftContent(
         name=name,
         description=f"{name}的具体内容",
@@ -33,7 +34,7 @@ def _content(name: str, grade: int, span: str) -> DraftContent:
         domain="数与代数",
         grade_start=grade,
         grade_end=grade,
-        evidence=[f"能演示{name}"],
+        evidence=evidence or [f"能演示{name}"],
         assessment_prompt=f"说说{name}？",
         source_span=span,
     )
@@ -163,6 +164,273 @@ def test_all_drafts_rejected_by_review_yields_empty_generation_error(tmp_path):
     # context 要带够诊断信息，让人不用重新跑一遍就能定位是哪一层归零的
     for key in ("chunks", "drafts", "deduped", "reviewed"):
         assert key in finding.context
+
+
+def test_edge_prerequisite_rejected_by_review_is_recorded_not_silently_dropped(tmp_path):
+    """Critical C2 复现：前置节点被 review 淘汰时，04-edges.json 里有该提议边，
+    最终 dependencies 却是 0，此前 dropped.json 里只有那个节点的
+    REVIEW_REJECTED，没有任何一条说明"那条边"消失了。编排层预过滤必须
+    显式记账，不能靠 dict comprehension 静默丢。"""
+    source = tmp_path / "source" / "math.md"
+    source.parent.mkdir(parents=True)
+    source.write_text(SOURCE, encoding="utf-8")
+    out = tmp_path / "out"
+
+    deps = _fake_deps()
+    # 只否决前置节点（3.1.1，被抽成"认识100以内的数"），目标节点保留
+    deps.fidelity_judges = [
+        lambda d: Vote(
+            reviewer="fake",
+            approved=d.content.name != "认识100以内的数",
+            reason="仅否决前置",
+        )
+    ]
+
+    run_pipeline(source.parent, out, deps, model_id="fake", curriculum="c")
+
+    graph = json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    assert graph["dependencies"] == []
+
+    drops = json.loads((out / "dropped.json").read_text(encoding="utf-8"))
+    edge_drops = [d for d in drops if d["reason"] == "EDGE_PREREQUISITE_REJECTED"]
+    assert len(edge_drops) == 1
+    assert "<-" in edge_drops[0]["ref"]
+
+
+def test_edge_target_rejected_by_review_is_recorded_not_silently_dropped(tmp_path):
+    """两处过滤的另一处：目标节点整个被淘汰时，指向它的整组边也要留痕，
+    而不是随着 dict comprehension 的 `if target in kept_ids` 悄悄消失。"""
+    source = tmp_path / "source" / "math.md"
+    source.parent.mkdir(parents=True)
+    source.write_text(SOURCE, encoding="utf-8")
+    out = tmp_path / "out"
+
+    deps = _fake_deps()
+    # 只否决边的目标节点（3.1.2，被抽成"100以内加减法"），前置节点保留
+    deps.fidelity_judges = [
+        lambda d: Vote(
+            reviewer="fake",
+            approved=d.content.name != "100以内加减法",
+            reason="仅否决目标",
+        )
+    ]
+
+    run_pipeline(source.parent, out, deps, model_id="fake", curriculum="c")
+
+    graph = json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    assert graph["dependencies"] == []
+
+    drops = json.loads((out / "dropped.json").read_text(encoding="utf-8"))
+    edge_drops = [d for d in drops if d["reason"] == "EDGE_TARGET_REJECTED"]
+    assert len(edge_drops) == 1
+    assert "<-" in edge_drops[0]["ref"]
+
+
+def test_duplicate_proposed_edge_is_collapsed_and_recorded(tmp_path):
+    """待裁决 #5 复现：同一 (target, prereq) 给出 hard + soft 两条边，此前两条
+    都会进 graph.json 的 dependencies，run_all 零 finding —— 编排层现在应在
+    调用 assemble 之前去重（hard 胜 soft）并记一条 DUPLICATE_EDGE。"""
+    source = tmp_path / "source" / "math.md"
+    source.parent.mkdir(parents=True)
+    source.write_text(SOURCE, encoding="utf-8")
+    out = tmp_path / "out"
+
+    deps = _fake_deps()
+
+    def proposer(target, candidates):
+        prereq = candidates[0].draft_id
+        return ProposedEdgeBatch(
+            edges=[
+                ProposedEdge(prerequisite_draft_id=prereq, strength="soft", reason="有帮助"),
+                ProposedEdge(prerequisite_draft_id=prereq, strength="hard", reason="其实必须"),
+            ]
+        )
+
+    deps.edge_proposer = proposer
+
+    run_pipeline(source.parent, out, deps, model_id="fake", curriculum="c")
+
+    graph = json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    assert len(graph["dependencies"]) == 1
+    assert graph["dependencies"][0]["strength"] == "hard"
+
+    drops = json.loads((out / "dropped.json").read_text(encoding="utf-8"))
+    dup_drops = [d for d in drops if d["reason"] == "DUPLICATE_EDGE"]
+    assert len(dup_drops) == 1
+
+
+# --- 修复 6（审查者头号建议）：把"没有静默跳过"这条第一原则写成
+# 跨层不变量测试，而不只是口号。
+#
+# 守恒式的准确形式（见下方注释里的推导）：
+#
+#   节点：len(02-drafts.json) == topics 数 + merges 数 + 节点相关 DropRecord 数
+#   边：  len(04-edges.json)  == dependencies 数 + 边相关 DropRecord 数
+#
+# 节点侧的关键点：merge 会让 draft 数减少，但那不是"丢弃"——merges.json
+# 单独记录，必须算进守恒式里，否则这条断言永远对不上（这正是简报里的
+# 提醒）。SAME_TOPIC_JUDGE_FAILED 也不算节点丢弃：判定失败时两个 draft
+# 都原样保留、只是没能合并，不会导致任何一个 draft 消失。
+#
+# 边侧的关键点："REVIEW_REJECTED" 这个原因码在 review.py 里被两处复用：
+# review_drafts 淘汰节点时 ref 是裸 draft_id，review_edges 淘汰边时 ref 是
+# "target<-prereq"。用 ref 是否含 "<-" 来判断一条 REVIEW_REJECTED 记录
+# 到底该计入节点侧还是边侧 —— 这也是本次顺带修的一处 ref 格式（原来边侧
+# 的 REVIEW_REJECTED.ref 只是裸 target_id，和节点侧撞在一起分不清）。
+
+_NODE_ONLY_REASONS = {"SAME_NAME_DIFFERENT_TOPIC", "FIDELITY_JUDGE_FAILED", "NAME_JUDGE_FAILED"}
+_EDGE_ONLY_REASONS = {
+    "UNKNOWN_PREREQUISITE",
+    "NON_CANDIDATE_PREREQUISITE",
+    "EDGE_TARGET_REJECTED",
+    "EDGE_PREREQUISITE_REJECTED",
+    "EDGE_JUDGE_FAILED",
+    "UNKNOWN_REVIEW_TARGET",
+    "DUPLICATE_EDGE",
+}
+
+
+def _is_node_drop(record: dict) -> bool:
+    if record["reason"] in _NODE_ONLY_REASONS:
+        return True
+    return record["reason"] == "REVIEW_REJECTED" and "<-" not in record["ref"]
+
+
+def _is_edge_drop(record: dict) -> bool:
+    if record["reason"] in _EDGE_ONLY_REASONS:
+        return True
+    return record["reason"] == "REVIEW_REJECTED" and "<-" in record["ref"]
+
+
+def test_conservation_invariant_holds_across_a_mixed_scenario(tmp_path):
+    """第一原则的可执行断言：没有静默跳过 == 每条没能进入产出的输入都留下了
+    带原因码的 DropRecord，多到能与产出对上账。
+
+    混合场景（不是全 happy path）：
+    - 一段没有条目编号，chunk 层丢弃（NO_STANDARD_CODE，不计入下面两条守恒式，
+      它发生在"draft"这个计量单位诞生之前）
+    - 两个 draft（分数的意义 / 分数的意义（换种说法）3.1.3、3.1.4）会在 dedupe
+      合并成一个 —— 验证 merges 被正确算进节点守恒式
+    - 两个 draft 被 fidelity 判定否决（3.1.1 的"读写100以内的数"、3.1.5 的
+      "小数的意义"）—— 前者是某条边的前置，后者是某条边的目标，
+      分别触发 EDGE_PREREQUISITE_REJECTED 与 EDGE_TARGET_REJECTED
+      （对应修复 1 里说的"两处过滤"）
+    - "分数的意义"目标下给出一条重复边（同一前置，soft + hard）——
+      触发修复 5 的 DUPLICATE_EDGE
+    """
+    source = tmp_path / "source" / "math.md"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "3.1.1 能认识并读写 100 以内的数。\n\n"
+        "3.1.2 能计算 100 以内的加减法。\n\n"
+        "3.1.3 能理解分数的意义。\n\n"
+        "3.1.4 能理解分数的意义（换一种说法）。\n\n"
+        "3.1.5 能理解小数的意义。\n\n"
+        "这一段是导言，没有编号。\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "out"
+
+    names_by_code = {
+        "3.1.1": "读写100以内的数",
+        "3.1.2": "100以内加减法",
+        "3.1.3": "分数的意义",
+        "3.1.4": "分数的意义（换种说法）",
+        "3.1.5": "小数的意义",
+    }
+    grades_by_code = {"3.1.1": 1, "3.1.2": 2, "3.1.3": 3, "3.1.4": 3, "3.1.5": 3}
+
+    def extractor(chunk):
+        name = names_by_code[chunk.standard_code]
+        # D3（3.1.3）给多一条证据，保证 dedupe 的 _better_base 稳定选它做
+        # 合并基底 —— 这样下面的边/审核逻辑只需按 content.name 定位，
+        # 不用关心合并后具体存活的是哪个 draft_id。
+        evidence = ["证据一", "证据二"] if chunk.standard_code == "3.1.3" else None
+        return DraftBatch(
+            drafts=[_content(name, grades_by_code[chunk.standard_code], chunk.text, evidence)]
+        )
+
+    def same_topic(a, b):
+        if a.content.name.startswith("分数的意义") and b.content.name.startswith("分数的意义"):
+            return SameTopicVerdict(same=True, reason="措辞不同，同一个知识点")
+        return SameTopicVerdict(same=False, reason="不同")
+
+    def proposer(target, candidates):
+        by_name = {c.content.name: c for c in candidates}
+        name = target.content.name
+        if name == "100以内加减法":
+            prereq = by_name["读写100以内的数"]
+            return ProposedEdgeBatch(
+                edges=[
+                    ProposedEdge(
+                        prerequisite_draft_id=prereq.draft_id, strength="hard", reason="先会读写数"
+                    )
+                ]
+            )
+        if name == "分数的意义":
+            prereq = by_name["100以内加减法"]
+            return ProposedEdgeBatch(
+                edges=[
+                    ProposedEdge(
+                        prerequisite_draft_id=prereq.draft_id, strength="soft", reason="有帮助（弱）"
+                    ),
+                    ProposedEdge(
+                        prerequisite_draft_id=prereq.draft_id, strength="hard", reason="其实必须（重复边）"
+                    ),
+                ]
+            )
+        if name == "小数的意义":
+            prereq = by_name["100以内加减法"]
+            return ProposedEdgeBatch(
+                edges=[
+                    ProposedEdge(
+                        prerequisite_draft_id=prereq.draft_id, strength="hard", reason="随便先修"
+                    )
+                ]
+            )
+        return ProposedEdgeBatch(edges=[])
+
+    def fidelity(draft):
+        rejected_names = {"读写100以内的数", "小数的意义"}
+        return Vote(
+            reviewer="fake", approved=draft.content.name not in rejected_names, reason="仅否决两个"
+        )
+
+    deps = PipelineDeps(
+        extractor=extractor,
+        same_topic_judge=same_topic,
+        edge_proposer=proposer,
+        fidelity_judges=[fidelity],
+        name_judges=[lambda name, description: Verdict(judgment="consistent")],
+        edge_judges=[lambda t, e: Vote(reviewer="fake", approved=True, reason="ok")],
+    )
+
+    run_pipeline(source.parent, out, deps, model_id="fake", curriculum="c")
+
+    drafts = json.loads((out / "02-drafts.json").read_text(encoding="utf-8"))
+    merges = json.loads((out / "merges.json").read_text(encoding="utf-8"))
+    proposed_edges = json.loads((out / "04-edges.json").read_text(encoding="utf-8"))
+    graph = json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    drops = json.loads((out / "dropped.json").read_text(encoding="utf-8"))
+
+    # 场景确实如预期地混合、而不是意外全 happy path 蒙混过关
+    assert any(d["reason"] == "NO_STANDARD_CODE" for d in drops)
+    assert len(merges) == 1
+    node_drops = [d for d in drops if _is_node_drop(d)]
+    edge_drops = [d for d in drops if _is_edge_drop(d)]
+    assert {d["reason"] for d in node_drops} == {"REVIEW_REJECTED"}
+    assert len(node_drops) == 2  # 读写100以内的数、小数的意义
+    assert {d["reason"] for d in edge_drops} == {
+        "EDGE_PREREQUISITE_REJECTED",
+        "EDGE_TARGET_REJECTED",
+        "DUPLICATE_EDGE",
+    }
+
+    # 节点守恒：draft 总数 == 最终 topics + merges + 节点相关 DropRecord
+    assert len(drafts) == len(graph["topics"]) + len(merges) + len(node_drops)
+
+    # 边守恒：提议边总数（04-edges.json）== 最终 dependencies + 边相关 DropRecord
+    assert len(proposed_edges) == len(graph["dependencies"]) + len(edge_drops)
 
 
 def test_normal_generation_does_not_emit_empty_generation_finding(tmp_path):
