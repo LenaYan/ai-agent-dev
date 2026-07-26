@@ -18,24 +18,31 @@ _CODE = re.compile(r"^\s*(\d+(?:\.\d+)+)[\s　]+(.*)", re.DOTALL)
 
 
 def split_source(text: str, source_file: str) -> tuple[list[Chunk], list[DropRecord]]:
+    # 统一换行：CRLF / 孤立 CR 都归一成 LF，避免 \r 混进落盘的 Chunk.text。
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
     stem = source_file.rsplit(".", 1)[0]
     chunks: list[Chunk] = []
     drops: list[DropRecord] = []
 
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
-    for para in paragraphs:
+    for para_ordinal, para in enumerate(paragraphs, start=1):
         matched = _CODE.match(para)
         if matched is None:
             drops.append(
                 DropRecord(
                     stage="chunk",
-                    ref=f"{stem}:{len(chunks) + len(drops) + 1}",
+                    # 用原文段落序号，而非切出结果的长度反推 —— 语义直白，不怕以后
+                    # 有分支既不进 chunks 也不进 drops 而悄悄错位。
+                    ref=f"{stem}:{para_ordinal}",
                     reason="NO_STANDARD_CODE",
                     detail=para[:60],
                 )
             )
             continue
         code, body = matched.group(1), matched.group(2).strip()
+        # 注意：这里的 ordinal 是切出来的 chunk 的连续序号（跳过被丢弃的段落），
+        # 与上面 DropRecord.ref 用的原文段落序号是两套不同的计数。
         ordinal = len(chunks) + 1
         chunks.append(
             Chunk(
