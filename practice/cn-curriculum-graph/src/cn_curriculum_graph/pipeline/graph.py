@@ -41,10 +41,26 @@ from cn_curriculum_graph.validators.base import Finding, Severity
 
 class PipelineState(TypedDict, total=False):
     """drops 是唯一带 reducer 的字段：手写版有五处显式 io.append_drops，
-    这里声明一次，累加语义成了类型的一部分。
+    这里声明一次，reducer 就把"跨层累加"这件事白送了，累加语义成了类型的
+    一部分，state 里的 `drops` 字段和最终返回值天然是完整聚合结果。
 
-    代价是丢了"每层跑完立刻落盘"的时序保证 —— 所以每个 Node 仍显式调
-    io.write_stage，中间产物可人眼检查是项目原则，不是手写版的实现细节。
+    但 reducer 只解决"聚合到哪"，不解决"什么时候落盘"——它只在 state
+    这个内存结构里累加，state 什么时候被落到磁盘上，reducer 完全不管。
+    早期实现图省事，把 io.append_drops 放在 run_pipeline_lg 末尾、
+    graph.invoke 返回之后调一次：这在 happy path 下和手写版行为一致，
+    但一旦中间某个 Node 抛异常，graph.invoke 直接向上抛、永远走不到那次
+    末尾调用，dropped.json 就完全不会被创建 —— 哪怕前面的层已经产生过
+    丢弃记录。手写版不会有这个问题，因为它是每层跑完立刻
+    `io.append_drops`，写盘动作和"这层跑完了"绑在一起，不依赖"整条流水线
+    跑到底"这个前提。
+
+    修复：每个 Node 在返回 delta 之前，自己先把这一层产生的 drops 落盘
+    （`io.append_drops`），时序上与手写版对齐；随后仍在 delta 里把 drops
+    交给 reducer，供最终返回值和跨层守恒断言使用。这意味着 run_pipeline_lg
+    末尾**不能**再调用一次 io.append_drops——否则每条记录会被写盘两次。
+    也就是说，reducer 白送了"聚合"这个语义，但没有白送"每层跑完立刻
+    持久化"这个时序保证——那部分依然得自己写，一行都不能省。这是这次
+    A/B 对比里一条真实的取舍记录，不是"框架都帮你做好了"。
     """
 
     source_dir: str
@@ -79,12 +95,16 @@ def node_chunk(state: PipelineState, runtime) -> dict:
         chunks += produced
         drops += dropped
     io.write_stage(_out(state) / "01-chunks.json", chunks)
+    # 立刻落盘，不等 run_pipeline_lg 末尾统一处理 —— 否则后面某层崩溃时
+    # 这条记录会随进程一起消失，见 PipelineState 文档
+    io.append_drops(_out(state) / "dropped.json", drops)
     return {"chunks": chunks, "drops": drops}
 
 
 def node_extract(state: PipelineState, runtime) -> dict:
     drafts, drops = extract_mod.extract_all(state["chunks"], runtime.context.extractor)
     io.write_stage(_out(state) / "02-drafts.json", drafts)
+    io.append_drops(_out(state) / "dropped.json", drops)
     return {"drafts": drafts, "drops": drops}
 
 
@@ -92,6 +112,7 @@ def node_dedupe(state: PipelineState, runtime) -> dict:
     result = dedupe_mod.dedupe(state["drafts"], runtime.context.same_topic_judge)
     io.write_stage(_out(state) / "03-deduped.json", result.kept)
     io.write_stage(_out(state) / "merges.json", result.merges)
+    io.append_drops(_out(state) / "dropped.json", result.drops)
     return {"deduped": result.kept, "merges": result.merges, "drops": result.drops}
 
 
@@ -105,6 +126,7 @@ def node_edges(state: PipelineState, runtime) -> dict:
             for e in group
         ],
     )
+    io.append_drops(_out(state) / "dropped.json", drops)
     return {"proposed": proposed, "drops": drops}
 
 
@@ -127,16 +149,19 @@ def node_review(state: PipelineState, runtime) -> dict:
     io.write_stage(
         _out(state) / "review-log.json", draft_review.outcomes + edge_review.outcomes
     )
+    review_drops = draft_review.drops + prefilter_drops + edge_review.drops + orphan_drops
+    io.append_drops(_out(state) / "dropped.json", review_drops)
     return {
         "reviewed": draft_review.kept,
         "kept_edges": edge_review.kept_edges,
         "outcomes": draft_review.outcomes + edge_review.outcomes,
-        "drops": draft_review.drops + prefilter_drops + edge_review.drops + orphan_drops,
+        "drops": review_drops,
     }
 
 
 def node_assemble(state: PipelineState, runtime) -> dict:
     deduped_edges, dup_drops = assemble_mod.dedupe_edges_by_pair(state["kept_edges"])
+    io.append_drops(_out(state) / "dropped.json", dup_drops)
     graph = assemble_mod.assemble(
         state["reviewed"],
         deduped_edges,
@@ -209,5 +234,8 @@ def run_pipeline_lg(
         },
         context=deps,
     )
-    io.append_drops(out_dir / "dropped.json", result["drops"])
+    # 注意：这里不再调用 io.append_drops —— 每个 Node 已经在自己返回 delta
+    # 之前把 drops 落盘过一次（见 PipelineState 文档的取舍说明）。这里的
+    # result["drops"] 是 reducer 聚合出的完整列表，只用于返回值，如果再
+    # append 一次会让 dropped.json 里每条记录重复一份。
     return result["findings"]

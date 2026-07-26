@@ -166,6 +166,39 @@ def test_dropped_records_accumulate_across_stages(tmp_path, engine):
 
 
 @ENGINES
+def test_dropped_json_survives_a_crash_mid_pipeline(tmp_path, engine, monkeypatch):
+    """崩溃复原实验的前提条件：两个引擎在崩溃现场的产物必须一致，否则下一个
+    任务对比的是这个混淆变量，不是框架本身的差异。
+
+    用 monkeypatch 让 review 层抛异常模拟"跑到一半崩了"，断言 dropped.json
+    在崩溃之后依然存在于磁盘上，且包含崩溃前（chunk 层）已经产生的记录 ——
+    不能因为记账机制没来得及在末尾一次性写盘，就让"崩溃现场"被误读成
+    "零丢弃"。
+    """
+    from cn_curriculum_graph.pipeline import review as review_mod
+
+    source = tmp_path / "source" / "math.md"
+    source.parent.mkdir(parents=True)
+    # 追加一段没有编号的导言，确保 chunk 层在 review 崩溃前已产生
+    # NO_STANDARD_CODE 记录
+    source.write_text(SOURCE + "\n这一段是导言，没有编号。\n", encoding="utf-8")
+    out = tmp_path / "out"
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("模拟 review 层崩溃")
+
+    monkeypatch.setattr(review_mod, "review_drafts", boom)
+
+    with pytest.raises(RuntimeError):
+        _run(engine, source.parent, out, _fake_deps(), model_id="fake", curriculum="c")
+
+    dropped_path = out / "dropped.json"
+    assert dropped_path.exists(), f"{engine}: 崩溃后 dropped.json 缺失"
+    drops = json.loads(dropped_path.read_text(encoding="utf-8"))
+    assert any(d["reason"] == "NO_STANDARD_CODE" for d in drops)
+
+
+@ENGINES
 def test_all_drafts_rejected_by_review_yields_empty_generation_error(tmp_path, engine):
     """一次生成如果被 review 淘汰得一个节点都不剩，退出码不能装作没事。
 
