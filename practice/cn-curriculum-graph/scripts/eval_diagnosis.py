@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -36,6 +37,7 @@ from cn_curriculum_graph.serve.query import (  # noqa: E402
     load_graph,
     match_misconceptions,
 )
+from cn_curriculum_graph.serve.scoring import LiteralScorer, VectorScorer  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 GROUNDTRUTH = ROOT / "data" / "diagnosis-eval-groundtruth.json"
@@ -100,6 +102,48 @@ def empty_case_accuracy(results: list[CaseResult]) -> float:
     return sum(1 for r in empties if not r.returned) / len(empties)
 
 
+@dataclass
+class FrontierPoint:
+    threshold: float
+    recall_at_3: float
+    empty_accuracy: float
+
+
+def sweep_thresholds(index, cases, scorer, thresholds, *, limit: int = 5) -> list[FrontierPoint]:
+    """同一个打分器、同一份语料，只挪阈值。
+
+    复用同一个 scorer 实例是**必须的**：向量打分器的缓存让整轮扫描只编码
+    一次语料。每个阈值新建一个 scorer 会把扫描变成 N 倍的模型调用。
+    """
+    points = []
+    original = scorer.min_relevance
+    try:
+        for threshold in thresholds:
+            scorer.min_relevance = threshold
+            results = run_cases(index, cases, limit=limit)
+            points.append(
+                FrontierPoint(
+                    threshold=threshold,
+                    recall_at_3=recall_at(results, 3),
+                    empty_accuracy=empty_case_accuracy(results),
+                )
+            )
+    finally:
+        scorer.min_relevance = original
+    return points
+
+
+def same_operating_point(frontier, *, empty_accuracy: float = 1.0) -> FrontierPoint | None:
+    """在"空样本正确率达到给定水平"的点里取召回最高的那个。
+
+    **两条路线必须在同一个工作点上比较**，否则就是拿"向量在 A 点"对
+    "字面在 B 点"，怎么比都能比赢。达不到该工作点时返回 None 而不是
+    退而求其次 —— 悄悄换工作点正是这个实验最容易自欺的地方。
+    """
+    qualified = [p for p in frontier if p.empty_accuracy >= empty_accuracy]
+    return max(qualified, key=lambda p: p.recall_at_3) if qualified else None
+
+
 def verdict(results: list[CaseResult]) -> int:
     """只有 recall@3 掉线才红。
 
@@ -116,10 +160,49 @@ def main() -> int:
     parser.add_argument("--graph", type=Path, default=DEFAULT_GRAPH)
     parser.add_argument("--groundtruth", type=Path, default=GROUNDTRUTH)
     parser.add_argument("--limit", type=int, default=5, help="每条观察句取回多少候选")
+    parser.add_argument("--scorer", choices=("literal", "vector"), default="literal")
+    parser.add_argument("--model", default=None, help="向量打分器用哪个模型（默认 BAAI/bge-m3）")
+    parser.add_argument("--threshold-sweep", action="store_true", help="扫描阈值并打印前沿曲线")
+    parser.add_argument("--sweep-from", type=float, default=0.05, help="扫描起点")
+    parser.add_argument("--sweep-to", type=float, default=0.95, help="扫描终点")
+    parser.add_argument("--sweep-step", type=float, default=0.05, help="扫描步长")
     args = parser.parse_args()
 
-    index = GraphIndex(load_graph(args.graph))
+    if args.scorer == "vector":
+        from cn_curriculum_graph.serve.embedding import build_embedder
+
+        scorer = VectorScorer(build_embedder(args.model))
+    else:
+        scorer = LiteralScorer()
+
+    started = time.perf_counter()
+    index = GraphIndex(load_graph(args.graph), scorer=scorer)
+    warm_seconds = time.perf_counter() - started
+
     cases = load_cases(args.groundtruth)
+
+    if args.threshold_sweep:
+        thresholds = [
+            round(args.sweep_from + i * args.sweep_step, 4)
+            for i in range(int((args.sweep_to - args.sweep_from) / args.sweep_step) + 1)
+        ]
+        frontier = sweep_thresholds(index, cases, scorer, thresholds, limit=args.limit)
+        print(f"{'阈值':<8}{'recall@3':<12}空样本正确率")
+        print("-" * 40)
+        for point in frontier:
+            print(f"{point.threshold:<8}{point.recall_at_3:<12.0%}{point.empty_accuracy:.0%}")
+
+        best = same_operating_point(frontier)
+        print("\n同工作点（空样本正确率 = 100%）：")
+        if best is None:
+            print("  ✗ 该打分器在扫描范围内**从未**达到 100% 空样本正确率 ——")
+            print("    它拿不到与字面基线同台的资格，不能只报它召回高的那个点。")
+            return 1
+        print(f"  阈值 {best.threshold} → recall@3 = {best.recall_at_3:.0%}")
+        print("  （字面基线在同一工作点上是 84%）")
+        print(f"\n代价：建索引 {warm_seconds:.1f}s，编码 {getattr(scorer, 'encode_calls', 0)} 条文本")
+        return 0
+
     results = run_cases(index, cases, limit=args.limit)
 
     print(f"图：{args.graph}    样本：{len(cases)}    候选上限：{args.limit}\n")

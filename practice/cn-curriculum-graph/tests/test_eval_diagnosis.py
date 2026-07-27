@@ -164,3 +164,65 @@ def test_a_case_runs_end_to_end_against_a_hand_built_graph():
 @pytest.mark.parametrize("k", [1, 3, 5])
 def test_recall_of_an_empty_result_set_is_zero_not_a_crash(k):
     assert recall_at([_result(["A"], [])], k) == 0.0
+
+
+# --- 阈值前沿 ---------------------------------------------------------
+
+
+def test_sweep_returns_one_point_per_threshold():
+    from eval_diagnosis import sweep_thresholds
+
+    from cn_curriculum_graph.models import Misconception
+    from cn_curriculum_graph.serve.query import GraphIndex
+    from cn_curriculum_graph.serve.scoring import LiteralScorer
+    from conftest import graph, topic
+
+    # 注意 1：scorer 必须与 index 共用同一个实例（真实 CLI 就是这么接的，
+    # 见 eval_diagnosis.main() ）—— match_misconceptions 读的是
+    # index.scorer.min_relevance，若 sweep 拿一个新建的 scorer 去改
+    # min_relevance，改的是另一个对象，index 内部用的还是默认阈值 0.2，
+    # 扫描形同虚设（brief 原文的调用方式就踩了这个坑）。
+    # 注意 2：观察句不能让 statement 整段被当作连续子串包住 ——
+    # LiteralScorer._relevance 取双向覆盖率的大者，一旦 statement 的全部
+    # 二元组都出现在 query 里，反方向覆盖率恒为 1.0，任何 <=1.0 的阈值都
+    # 筛不掉它，阈值扫描同样测不出效果（brief 原文的观察句也踩了这个坑）。
+    scorer = LiteralScorer()
+    index = GraphIndex(
+        graph(topics=[topic("A", misconceptions=[
+            Misconception(statement="1/8 比 1/5 大", probe="哪个大？", correction_hint="份数越多每份越小"),
+        ])]),
+        scorer=scorer,
+    )
+    cases = [{"id": "c1", "observation": "孩子坚持八分之一比五分之一还要大", "expected_topic_ids": ["A"]}]
+
+    frontier = sweep_thresholds(index, cases, scorer, [0.1, 0.3, 0.9])
+
+    assert [p.threshold for p in frontier] == [0.1, 0.3, 0.9]
+    assert frontier[0].recall_at_3 == 1.0
+    assert frontier[-1].recall_at_3 == 0.0
+
+
+def test_same_operating_point_picks_the_best_recall_at_full_empty_accuracy():
+    """公平性的全部保障：两条路线必须在同一个工作点上比。"""
+    from eval_diagnosis import FrontierPoint, same_operating_point
+
+    frontier = [
+        FrontierPoint(threshold=0.1, recall_at_3=0.95, empty_accuracy=0.33),
+        FrontierPoint(threshold=0.3, recall_at_3=0.89, empty_accuracy=1.0),
+        FrontierPoint(threshold=0.5, recall_at_3=0.74, empty_accuracy=1.0),
+    ]
+
+    best = same_operating_point(frontier)
+
+    assert best.threshold == 0.3
+    assert best.recall_at_3 == 0.89
+
+
+def test_same_operating_point_returns_none_when_nothing_reaches_it():
+    """报 None 而不是退而求其次挑一个 —— 悄悄换工作点正是这个实验
+    最容易自欺的地方。"""
+    from eval_diagnosis import FrontierPoint, same_operating_point
+
+    frontier = [FrontierPoint(threshold=0.1, recall_at_3=0.95, empty_accuracy=0.66)]
+
+    assert same_operating_point(frontier) is None
