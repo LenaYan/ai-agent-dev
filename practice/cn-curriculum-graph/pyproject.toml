@@ -19,11 +19,13 @@ dependencies = [
     # 装上，但"我们直接 import 的东西"就该显式声明，否则上游哪天换掉异步
     # 驱动，我们会在 import 时才发现。
     "aiosqlite>=0.20",
+    "mcp>=1.28,<2",
 ]
 
 [project.scripts]
 ccg-validate = "cn_curriculum_graph.cli:main"
 ccg-generate = "cn_curriculum_graph.pipeline.run:main"
+ccg-mcp = "cn_curriculum_graph.serve.mcp_server:main"
 
 [dependency-groups]
 dev = [
