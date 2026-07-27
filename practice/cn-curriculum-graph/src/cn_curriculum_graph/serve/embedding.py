@@ -16,9 +16,17 @@ from typing import Protocol
 class Embedder(Protocol):
     """把文本批量编码成向量。
 
-    单方法协议是刻意的：query/document 的不对称（有些模型要求查询侧加
-    instruction 前缀）在实现内部消化，不外泄到协议 —— 否则领域层就得
-    知道模型的脾气，这层边界就白划了。
+    单方法协议是刻意的：领域层不必知道模型的脾气，这层边界才划得住。
+
+    **代价要写明白：这个协议不区分 query 与 document。** `encode` 只收到
+    一串文本，实现无从判断哪条是提问、哪条是被检索的语料 ——
+    `VectorScorer.relevance()` 把两者混在同一个待编码列表里，缓存也是纯
+    文本 key。所以**要求查询侧加 instruction 前缀的模型（如
+    Qwen3-Embedding 的 `Instruct: ...\\nQuery: ...`）在当前协议下用不了**：
+    换过去不会报错，只会拿到一个悄悄偏低的分数，然后被记成"换个模型也没赢"。
+
+    bge-m3 dense 不要前缀，所以 2026-07-27 那轮对比不受影响。换非对称模型
+    之前，先扩这个协议（把 query/document 分成两个方法或加一个标记参数）。
     """
 
     def encode(self, texts: list[str]) -> list[list[float]]: ...
