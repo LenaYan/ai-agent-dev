@@ -19,10 +19,10 @@ from cn_curriculum_graph.serve.query import (
     get_topic,
     load_graph,
     match_misconceptions,
-    normalize_math,
     plan_path,
     search_topics,
 )
+from cn_curriculum_graph.serve.scoring import normalize_math
 from conftest import dep, graph, topic
 
 
