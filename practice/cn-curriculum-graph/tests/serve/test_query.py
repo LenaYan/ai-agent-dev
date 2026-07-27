@@ -19,6 +19,7 @@ from cn_curriculum_graph.serve.query import (
     get_topic,
     load_graph,
     match_misconceptions,
+    normalize_math,
     plan_path,
     search_topics,
 )
@@ -558,3 +559,75 @@ def test_plan_path_unknown_known_id_raises():
     """已掌握列表里写错 id 必须报错——静默忽略会让"跳过了什么"变成猜谜。"""
     with pytest.raises(TopicNotFoundError):
         plan_path(_chain_index(), "frac_add", known_ids=["typo"])
+
+
+# --- 字面匹配的两处结构性缺陷（都是真实评测逼出来的） -------------------
+
+
+def test_a_long_observation_can_match_a_short_misconception():
+    """长度惩罚：家长说得越具体越啰嗦，覆盖率的分母就越大。
+
+    只按"查询被覆盖了多少"打分，会让一句完整的家长转述永远够不到门槛
+    —— 实测 recall@3 因此卡在 63%。命中可以来自任一方向：
+    观察句覆盖了这条误概念的特征，同样算命中。
+    """
+    idx = _index(
+        topics=[
+            topic(
+                "A",
+                misconceptions=[
+                    Misconception(
+                        statement="减法也有交换律，比如 5-3=3-5",
+                        probe="5-3 和 3-5 一样吗？",
+                        correction_hint="让孩子实际算一算。",
+                    )
+                ],
+            )
+        ]
+    )
+
+    hits = match_misconceptions(idx, "他说减法也能交换，5 减 3 和 3 减 5 反正结果一样，写哪个都行。")
+
+    assert [h.topic_id for h in hits] == ["A"]
+
+
+def test_spoken_chinese_matches_math_notation():
+    """表示层不同：图里写 1/8，家长说"八分之一"，字面重叠为零。
+
+    这不是同义词问题（加权、阈值都救不了），是同一个数学对象的两种写法。
+    归一化两边即可，仍然不需要模型。
+    """
+    idx = _index(
+        topics=[
+            topic(
+                "A",
+                misconceptions=[
+                    Misconception(
+                        statement="1/8 比 1/5 大，因为 8 比 5 大",
+                        probe="哪个更大？",
+                        correction_hint="分的份数越多每份越小。",
+                    )
+                ],
+            )
+        ]
+    )
+
+    hits = match_misconceptions(idx, "孩子坚持八分之一比五分之一大，理由是 8 比 5 大。")
+
+    assert [h.topic_id for h in hits] == ["A"]
+
+
+def test_normalization_leaves_operator_words_alone():
+    """只在数字之间改写运算符：把"减法"改成"-法"会伤到一大批正常词。"""
+    assert normalize_math("减法也有交换律") == "减法也有交换律"
+    assert normalize_math("5 减 3") == "5-3"
+    assert normalize_math("八分之一") == "1/8"
+    assert normalize_math("二分之一加五分之一") == "1/2+1/5"
+
+
+def test_short_names_do_not_swallow_unrelated_queries():
+    """目标侧覆盖率是把双刃剑：短 name 容易被"完全覆盖"。
+    这条钉住它不会退化成"什么都命中"。"""
+    idx = _index(topics=[topic("A", name="平均分", description="把一个整体分成同样多的几份")])
+
+    assert search_topics(idx, "孩子背古诗老记不住") == []

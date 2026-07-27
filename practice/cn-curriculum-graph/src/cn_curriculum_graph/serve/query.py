@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -38,17 +39,19 @@ DESCRIPTION_WEIGHT = 0.5
 # 误概念的 probe / correction_hint 相对 statement 的折价，同上。
 SECONDARY_WEIGHT = 0.5
 
-# 入选门槛：查询的字面必须被命中字段覆盖到这个比例。
+# 入选门槛：相关度必须到这个数。
 #
 # **这道门槛是"敢返回空"的实现**：没有它，一次偶然的字重叠就能凑出候选
 # ——"孩子不爱吃青菜"会命中一条 correction_hint，只因为两边都有"孩子"
 # 二字（`test_match_misconceptions_returns_empty_when_nothing_is_close`）。
-# 阈值卡在**原始覆盖率**上而不是加权分上：加权只用于排序，不该让
+# 门槛卡在**原始相关度**上而不是加权分上：加权只用于排序，不该让
 # description 命中因为折价而掉出候选。
 #
-# 0.2 是首版取值，不是调优结果 —— 它的对错由 `scripts/eval_diagnosis.py`
-# 的 recall@3 说了算。调高会掉召回，调低会让空结果变成硬凑。
-MIN_COVERAGE = 0.2
+# 0.2 从首版起没有动过 —— 这一点很重要：2026-07-27 那次评测把 recall@3
+# 从 63% 修到 84%，靠的是改打分公式与归一化（都是结构性缺陷），
+# **不是调这个数**。扫过一遍全档（见 memory）：任何单纯调阈值的做法都只是
+# 在"召得回"与"敢返回空"之间沿着同一条前沿滑动，换不来净收益。
+MIN_RELEVANCE = 0.2
 
 
 class TopicNotFoundError(ValueError):
@@ -250,8 +253,41 @@ class GraphIndex:
             raise TopicNotFoundError(f"图里没有 topic_id={topic_id!r}") from None
 
 
+_CN_DIGITS = {c: str(i) for i, c in enumerate("零一二三四五六七八九")} | {"十": "10"}
+_OPERATORS = {"加": "+", "减": "-", "乘": "×", "除以": "÷"}
+_NUMBER = r"(?:\d+|[零一二三四五六七八九十])"
+
+
+def _as_digits(token: str) -> str:
+    return _CN_DIGITS.get(token, token)
+
+
+def normalize_math(text: str) -> str:
+    """把口语的数学表达改写成符号写法。
+
+    **为什么需要这一步**（2026-07-27 评测逼出来的，不是设计时想到的）：
+    图里的误概念是用符号写的（`1/4比1/3大`、`5-3=3-5`），而家长是用嘴说的
+    （"八分之一比五分之一大"、"5 减 3"）。这两种写法的字面重叠是**零**
+    ——不是同义词问题，是同一个数学对象的两种表示。加权、调阈值都救不了，
+    归一化两边即可，仍然不需要模型。
+
+    只在**数字之间**改写运算符：`5 减 3` → `5-3`，但"减法也有交换律"
+    原样不动。否则"减法"会变成"-法"，伤到一大批正常词。
+    """
+    text = re.sub(
+        rf"({_NUMBER})分之({_NUMBER})",
+        lambda m: f"{_as_digits(m.group(2))}/{_as_digits(m.group(1))}",
+        text,
+    )
+    return re.sub(
+        rf"({_NUMBER})\s*({'|'.join(_OPERATORS)})\s*({_NUMBER})",
+        lambda m: f"{_as_digits(m.group(1))}{_OPERATORS[m.group(2)]}{_as_digits(m.group(3))}",
+        text,
+    )
+
+
 def _normalize(text: str) -> str:
-    return "".join(ch for ch in text.lower() if not ch.isspace())
+    return "".join(ch for ch in normalize_math(text).lower() if not ch.isspace())
 
 
 def _grams(text: str) -> frozenset[str]:
@@ -268,15 +304,26 @@ def _grams(text: str) -> frozenset[str]:
     return frozenset(s[i : i + 2] for i in range(len(s) - 1))
 
 
-def _coverage(query_grams: frozenset[str], target: frozenset[str]) -> float:
-    """查询被目标覆盖的比例。
+def _relevance(query_grams: frozenset[str], target: frozenset[str]) -> float:
+    """两个方向的覆盖率取大者。
 
-    分母取查询而不是目标：长描述不该因为"字多"就被稀释掉，
-    我们问的是"用户说的这些字，命中了多少"。
+    **为什么不只看"查询被覆盖了多少"**（首版就是那样，实测 recall@3 卡在
+    63%）：家长转述一句话往往比图里的误概念长得多，分母里塞满"他说""一样"
+    这类没有信息量的字，把真正对上的"交换/减法"稀释到门槛以下。
+    **说得越具体越啰嗦，越被惩罚** —— 这是度量的缺陷，不是字面匹配的极限。
+
+    反方向（这条误概念的特征被观察句覆盖了多少）恰好治这个：短 statement
+    被一句长转述覆盖时，得分很高。两个方向取大者，等于承认命中可以来自
+    任一侧。
+
+    也试过 IDF 加权，**实测更差**（recall 63% → 53%）：IDF 惩罚的是"在图语料里
+    罕见"，而家长口语里的噪声词恰恰在图语料里从没出现过，df=0 → 权重最大，
+    把分母顶得更高。方向正好搞反了。这条失败记录保留在这里，别再试第二遍。
     """
-    if not query_grams:
+    if not query_grams or not target:
         return 0.0
-    return len(query_grams & target) / len(query_grams)
+    shared = len(query_grams & target)
+    return max(shared / len(query_grams), shared / len(target))
 
 
 def _summarize(text: str) -> str:
@@ -322,9 +369,9 @@ def search_topics(
         if grade is not None and not (topic.grade_start <= grade <= topic.grade_end):
             continue
         name_grams, desc_grams = index.search_grams(topic.id)
-        name_hit = _coverage(query_grams, name_grams)
-        desc_hit = _coverage(query_grams, desc_grams)
-        if max(name_hit, desc_hit) < MIN_COVERAGE:
+        name_hit = _relevance(query_grams, name_grams)
+        desc_hit = _relevance(query_grams, desc_grams)
+        if max(name_hit, desc_hit) < MIN_RELEVANCE:
             continue
         hits.append((max(name_hit, DESCRIPTION_WEIGHT * desc_hit), topic.id, topic))
 
@@ -346,12 +393,12 @@ def match_misconceptions(
 
     for topic in index.graph.topics:
         for order, mis in enumerate(topic.misconceptions):
-            primary = _coverage(observation_grams, _grams(mis.statement))
+            primary = _relevance(observation_grams, _grams(mis.statement))
             secondary = max(
-                _coverage(observation_grams, _grams(mis.probe)),
-                _coverage(observation_grams, _grams(mis.correction_hint)),
+                _relevance(observation_grams, _grams(mis.probe)),
+                _relevance(observation_grams, _grams(mis.correction_hint)),
             )
-            if max(primary, secondary) < MIN_COVERAGE:
+            if max(primary, secondary) < MIN_RELEVANCE:
                 continue
             score = max(primary, SECONDARY_WEIGHT * secondary)
             hits.append(
