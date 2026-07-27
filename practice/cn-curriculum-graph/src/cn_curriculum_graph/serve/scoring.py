@@ -11,8 +11,11 @@
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Protocol, Sequence
+
+from cn_curriculum_graph.serve.embedding import Embedder
 
 _CN_DIGITS = {c: str(i) for i, c in enumerate("零一二三四五六七八九")} | {"十": "10"}
 _OPERATORS = {"加": "+", "减": "-", "乘": "×", "除以": "÷"}
@@ -127,3 +130,57 @@ class LiteralScorer:
 
     def relevance(self, query: str, target: str) -> float:
         return _relevance(_grams(query), _grams(target))
+
+
+def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
+    """余弦相似度，负值截断为 0。
+
+    截断不是洁癖：负相关度会让 `SECONDARY_WEIGHT * secondary` 这种加权
+    反向发力，把"明确不相关"排到"完全没关系"前面去。
+    """
+    if len(a) != len(b):
+        raise ValueError(f"向量维度不一致：{len(a)} vs {len(b)}")
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return max(0.0, dot / (norm_a * norm_b))
+
+
+class VectorScorer:
+    """向量打分：余弦相似度 + 按文本记忆的向量缓存。
+
+    缓存不是优化，是可行性：语料 ~150 条文本，每次查询要跟其中每一条比
+    一遍，不缓存就是每次查询几百次 encode。`warm` 让整个语料一次编码完。
+
+    **默认阈值 0.5 是占位，不是调优结果。** 真值由
+    `scripts/eval_diagnosis.py --threshold-sweep` 扫出前沿后，在与字面基线
+    相同的工作点（空样本正确率 100%）上读取 —— 而不是挑一个刚好过闸门的数。
+    """
+
+    def __init__(self, embedder: Embedder, *, min_relevance: float = 0.5) -> None:
+        self._embedder = embedder
+        self._cache: dict[str, list[float]] = {}
+        self.min_relevance = min_relevance
+        self.encode_calls = 0
+
+    def warm(self, texts: Sequence[str]) -> None:
+        pending = [t for t in dict.fromkeys(texts) if t.strip() and t not in self._cache]
+        if pending:
+            self._encode_into_cache(pending)
+
+    def relevance(self, query: str, target: str) -> float:
+        if not query.strip() or not target.strip():
+            return 0.0
+        pending = [t for t in dict.fromkeys((query, target)) if t not in self._cache]
+        if pending:
+            self._encode_into_cache(pending)
+        return _cosine(self._cache[query], self._cache[target])
+
+    def _encode_into_cache(self, texts: list[str]) -> None:
+        vectors = self._embedder.encode(texts)
+        if len(vectors) != len(texts):
+            raise ValueError(f"embedder 返回 {len(vectors)} 条向量，但请求了 {len(texts)} 条")
+        self.encode_calls += len(texts)
+        self._cache.update(zip(texts, vectors))
