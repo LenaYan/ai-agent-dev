@@ -479,3 +479,105 @@ def test_fidelity_tool_schema_puts_reason_before_judgment():
     props = list(FidelityVerdict.model_json_schema()["properties"].keys())
 
     assert props.index("reason") < props.index("judgment")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 边审核并发化（2026-07-27）
+#
+# 起因是一次真实失败：三档 fidelity 把 draft 存活率从 27/72 提到 64/72 之后，
+# 边审核的工作量从"几乎没有"（上一轮 292 条边在审核前就随端点连坐死了）
+# 变成 345 条边 × 2 判定器 = **690 次串行调用**，直接撞上 `NODE_TIMEOUT`：
+#
+#   NodeTimeoutError: Node 'review' exceeded its run timeout of 600.000s
+#   总耗时 49:32（超时被 RetryPolicy 重跑了 3 次）
+#
+# 这一次失败同时引爆了三条此前只活在文档与合成测试里的结论：
+#   ① NODE_TIMEOUT 第一次在真实运行里打响；
+#   ② RetryPolicy 重试了 NodeTimeoutError —— 整层重跑 3 次，白烧三倍调用；
+#   ③ 总耗时 49:32 ≫ 10 分钟超时 —— 印证"timeout 不提供墙钟上界"。
+#
+# **根因是同一个**：并发校准只覆盖了 graph_fanout 的两个扇出点
+# （extract_one / review_one），`review_edges` 从来没被并发化过 ——
+# 只是以前它没活干，所以没人发现。
+#
+# 关键认知：`review_edges` 需要全局 `kept_ids` 才能**开始**，但开始之后
+# **每条边的判定是彼此独立的**。"需要全局视野"阻止的是**扇出**（Send 到
+# 条目级），不是层内并发。
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_review_edges_runs_judges_concurrently():
+    """690 次调用必须并发，否则串行下真实语料必然超时。"""
+    import threading
+    import time
+
+    lock = threading.Lock()
+    state = {"now": 0, "peak": 0}
+
+    def slow_judge(target, edge):
+        with lock:
+            state["now"] += 1
+            state["peak"] = max(state["peak"], state["now"])
+        time.sleep(0.05)
+        with lock:
+            state["now"] -= 1
+        return Vote(reviewer="fake", approved=True, reason="ok")
+
+    edges = {
+        "a": [
+            ProposedEdge(prerequisite_draft_id=f"p{i}", strength="hard", reason="理由")
+            for i in range(8)
+        ]
+    }
+
+    review_edges({"a": _draft("a")}, edges, edge_judges=[slow_judge], max_concurrency=4)
+
+    assert state["peak"] > 1, "边审核仍是串行的"
+    assert state["peak"] <= 4, f"并发上限没生效，峰值 {state['peak']}"
+
+
+def test_review_edges_output_is_identical_to_serial_order():
+    """并发不能改变产物顺序。
+
+    两个编排引擎的对等性测试是**逐字节比对落盘产物**的
+    （test_two_engines_produce_identical_artifacts_on_normal_run）；
+    判定完成的先后顺序一旦泄漏进 kept_edges / outcomes / drops 的排列，
+    那组测试就会变成随机红绿 —— 比"慢"糟糕得多。
+    """
+    import random
+    import time
+
+    def jittery_judge(target, edge):
+        # 故意让完成顺序与输入顺序无关
+        time.sleep(random.uniform(0, 0.02))
+        ok = edge.prerequisite_draft_id != "p3"
+        return Vote(reviewer="fake", approved=ok, reason="ok")
+
+    edges = {
+        "a": [
+            ProposedEdge(prerequisite_draft_id=f"p{i}", strength="hard", reason="理由")
+            for i in range(6)
+        ]
+    }
+
+    serial = review_edges({"a": _draft("a")}, edges, edge_judges=[jittery_judge], max_concurrency=1)
+    parallel = review_edges({"a": _draft("a")}, edges, edge_judges=[jittery_judge], max_concurrency=6)
+
+    assert [e.prerequisite_draft_id for e in parallel.kept_edges["a"]] == [
+        e.prerequisite_draft_id for e in serial.kept_edges["a"]
+    ]
+    assert [o.target for o in parallel.outcomes] == [o.target for o in serial.outcomes]
+    assert [d.ref for d in parallel.drops] == [d.ref for d in serial.drops]
+
+
+def test_review_edges_still_reraises_programming_errors_when_concurrent():
+    """并发不能把程序 bug 吞成 EDGE_JUDGE_FAILED —— 线程池会把异常包起来，
+    必须显式还原成原类型冒泡，否则 PROGRAMMING_ERRORS 那道防线在并发路径上失效。"""
+
+    def buggy(target, edge):
+        raise KeyError("some_key")
+
+    edges = {"a": [ProposedEdge(prerequisite_draft_id="p", strength="hard", reason="理由")]}
+
+    with pytest.raises(KeyError):
+        review_edges({"a": _draft("a")}, edges, edge_judges=[buggy], max_concurrency=4)

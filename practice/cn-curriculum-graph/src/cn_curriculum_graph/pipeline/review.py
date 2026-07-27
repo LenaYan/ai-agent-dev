@@ -13,11 +13,13 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from cn_curriculum_graph.judges.deepseek_judge import DEEPSEEK_BASE_URL
+from cn_curriculum_graph.pipeline.concurrency import DEFAULT_MAX_CONCURRENT_LLM_CALLS
 from cn_curriculum_graph.errors import ToolCallMissingError
 from cn_curriculum_graph.pipeline.models import (
     PROGRAMMING_ERRORS,
@@ -384,8 +386,9 @@ def review_edges(
     drafts_by_id: dict[str, TopicDraft],
     edges: dict[str, list[ProposedEdge]],
     edge_judges: list[EdgeJudge],
+    max_concurrency: int = DEFAULT_MAX_CONCURRENT_LLM_CALLS,
 ) -> ReviewResult:
-    """逐边过 edge_reason 维度：全票通过才留。
+    """逐边过 edge_reason 维度：全票通过才留。**判定并发执行，产物顺序不变。**
 
     **防 KeyError**：`drafts_by_id` 与 `edges` 的键不保证同步 —— 调用方常见的
     用法是 `drafts_by_id` 只装 review_drafts 幸存下来的 draft，而 `edges` 若未经
@@ -395,6 +398,40 @@ def review_edges(
 
     **空 judges 列表当场炸**：同 review_drafts，all([]) == True 会把零个
     判定器读成满票通过，这是配置错误，不是合法输入。
+
+    ## 为什么这里要并发（2026-07-27，一次真实失败逼出来的）
+
+    三档 fidelity 把 draft 存活率从 27/72 提到 64/72 之后，边审核的工作量从
+    "几乎没有"（上一轮 292 条边在审核前就随端点连坐死了）变成
+    **345 条边 × 2 判定器 = 690 次串行调用**，直接撞上 `NODE_TIMEOUT`：
+
+        NodeTimeoutError: Node 'review' exceeded its run timeout of 600.000s
+        总耗时 49:32
+
+    一次失败同时引爆三条此前只活在文档与合成测试里的结论：①`NODE_TIMEOUT`
+    第一次在真实运行里打响；②`RetryPolicy` 重试了 `NodeTimeoutError`，整层
+    重跑 3 次白烧三倍调用；③总耗时远超 10 分钟超时，印证"timeout 不提供墙钟
+    上界"。根因是同一个：并发校准只覆盖了 `graph_fanout` 的两个扇出点，
+    **`review_edges` 从来没被并发化过 —— 只是以前它没活干，所以没人发现**。
+
+    **关键认知**：`review_edges` 需要全局 `kept_ids` 才能**开始**，但开始之后
+    每条边的判定彼此独立。"需要全局视野"阻止的是**扇出**（`Send` 到条目级），
+    不是层内并发。这两件事此前被混为一谈。
+
+    ## 三条不能破坏的性质
+
+    1. **产物顺序必须与串行一致。** 两个编排引擎的对等性测试是逐字节比对
+       落盘产物的；判定完成的先后一旦泄漏进 `kept_edges`/`outcomes`/`drops`
+       的排列，那组测试会变成随机红绿 —— 比慢糟糕得多。做法：先按原顺序摊平
+       成任务列表，`executor.map` 保序回收，再顺序组装。
+    2. **单条边失败不中断整批**（设计文档 §6）。异常在工作线程里就地转成
+       结果对象带回来，不让它穿透 `map`。
+    3. **`PROGRAMMING_ERRORS` 仍要冒泡。** 线程池会把异常包起来，必须显式
+       还原成原类型 raise，否则这道防线在并发路径上静默失效。
+
+    用线程池而非 `asyncio`：本函数是同步的，手写版 `run_pipeline` 直接调它、
+    LangGraph 版用 `asyncio.to_thread` 包它。改成 async 会把异步传染到手写版，
+    而"两个引擎共用同一套六层纯函数"是整个对比实验的前提。
     """
     if not edge_judges:
         raise ValueError(
@@ -406,6 +443,8 @@ def review_edges(
     outcomes: list[ReviewOutcome] = []
     drops: list[DropRecord] = []
 
+    # 1) 按原顺序摊平成任务列表；unknown target 在这一步就地记账，不进任务列表
+    tasks: list[tuple[str, TopicDraft, ProposedEdge]] = []
     for target_id, proposed in edges.items():
         target = drafts_by_id.get(target_id)
         if target is None:
@@ -421,49 +460,64 @@ def review_edges(
                 )
             )
             continue
-
         kept_edges[target_id] = []
-        for edge in proposed:
-            pair_ref = f"{target_id}<-{edge.prerequisite_draft_id}"
-            try:
-                votes = [judge(target, edge) for judge in edge_judges]
-            except PROGRAMMING_ERRORS:  # 程序 bug，不该伪装成判定器失败，直接冒泡
-                raise
-            except Exception as exc:  # noqa: BLE001 —— 单条边失败不中断整批
-                drops.append(
-                    DropRecord(
-                        stage="review",
-                        ref=pair_ref,
-                        reason="EDGE_JUDGE_FAILED",
-                        detail=f"{type(exc).__name__}: {exc}（判定器未能表态，保守淘汰该边）",
-                    )
-                )
-                continue
+        tasks.extend((target_id, target, edge) for edge in proposed)
 
-            approved = all(v.approved for v in votes)
-            outcomes.append(
-                ReviewOutcome(
-                    target=pair_ref,
-                    aspect="edge_reason",
-                    votes=votes,
-                    approved=approved,
+    def judge_one(task: tuple[str, TopicDraft, ProposedEdge]) -> list[Vote] | BaseException:
+        """在工作线程里跑完一条边的全部判定。
+
+        异常**就地捕获后作为返回值带回**，不让它穿透 `executor.map` ——
+        `map` 是惰性的，一旦某个任务抛出，它之后的结果就取不到了，
+        "单条边失败不中断整批"会在并发路径上悄悄失效。分类留给主线程。
+        """
+        _, target, edge = task
+        try:
+            return [judge(target, edge) for judge in edge_judges]
+        except BaseException as exc:  # noqa: BLE001 —— 分类在主线程做，见上
+            return exc
+
+    if tasks:
+        # max_workers 至少为 1：max_concurrency=0 会让 ThreadPoolExecutor 直接抛
+        with ThreadPoolExecutor(max_workers=max(1, max_concurrency)) as pool:
+            results = list(pool.map(judge_one, tasks))  # map 保序，与串行同序
+    else:
+        results = []
+
+    # 2) 顺序组装 —— 这一段完全同步，与串行版逐行等价
+    for (target_id, _target, edge), result in zip(tasks, results, strict=True):
+        pair_ref = f"{target_id}<-{edge.prerequisite_draft_id}"
+        if isinstance(result, BaseException):
+            if isinstance(result, PROGRAMMING_ERRORS):
+                raise result  # 程序 bug，不该伪装成判定器失败
+            drops.append(
+                DropRecord(
+                    stage="review",
+                    ref=pair_ref,
+                    reason="EDGE_JUDGE_FAILED",
+                    detail=(
+                        f"{type(result).__name__}: {result}"
+                        "（判定器未能表态，保守淘汰该边）"
+                    ),
                 )
             )
-            if approved:
-                kept_edges[target_id].append(edge)
-            else:
-                drops.append(
-                    DropRecord(
-                        stage="review",
-                        # ref 用 "target<-prereq" 而非裸 target_id：与 review_drafts
-                        # 淘汰节点的 REVIEW_REJECTED（ref=draft_id）区分开，否则
-                        # 同一 reason 码在两处含义不同，下游按 ref 归因会分不清
-                        # 到底丢的是一整个节点还是一条边。
-                        ref=pair_ref,
-                        reason="REVIEW_REJECTED",
-                        detail=f"边 {pair_ref} 未通过审核",
-                    )
+            continue
+
+        votes = result
+        approved = all(v.approved for v in votes)
+        outcomes.append(
+            ReviewOutcome(target=pair_ref, aspect="edge_reason", votes=votes, approved=approved)
+        )
+        if approved:
+            kept_edges[target_id].append(edge)
+        else:
+            drops.append(
+                DropRecord(
+                    stage="review",
+                    ref=pair_ref,
+                    reason="REVIEW_REJECTED",
+                    detail=f"边 {pair_ref} 未通过审核",
                 )
+            )
 
     return ReviewResult(kept_edges=kept_edges, outcomes=outcomes, drops=drops)
 
