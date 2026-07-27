@@ -56,3 +56,10 @@
 - 取舍：放弃"产出可信数据集"这个目标，换来教研审核不到位不再是致命伤，而是一个诚实标注的已知局限（schema 里 Provenance.review_status 默认 unreviewed，MISSING_PROVENANCE 是 CI 硬错误）。
 - 按第 3 层次（开源/产品）的标准设计 schema 和 provenance，将来升级不用推倒重来。真要产品化需先解决：教研员审核背书 + 课标著作权法律意见。
 - 详见 practice/cn-curriculum-graph/docs/feasibility-analysis.md、docs/schema-design.md（D1-D8 逐条决策）
+
+## ADR-0006 — MCP 暴露层的领域层不放 LLM，检索质量交给 ground truth 说话  (2026-07-27)
+- 背景：把知识图暴露给 agent 时，诊断场景要把"孩子说 0.45 比 0.405 小"对到知识点上。直觉方案是在 server 里调一个模型做语义匹配。
+- 决定：领域层是**纯检索 + 纯图算法**（零 key、零成本、全可测），语义判断留给消费端；够不够用由 `scripts/eval_diagnosis.py` 的 recall@3 判定，不由直觉判定。
+- 理由：①MCP server 的消费方本身就是 LLM，在 server 里再放一个模型是把同一个推理做两遍 —— 心法①要拦的正是这个；②server 一旦要 key，就多出成本、启动依赖、测试要注入 fake 三笔账，而换来的能力消费端本来就有。
+- 取舍/放弃项：放弃语义泛化能力。中文同义换词会掉召回，实测 recall@3 = 84%（22 条 ground truth，阈值 75%），剩余未命中集中在"具体数字被换掉"这类。若将来评测明显掉线，这条 ADR 就该被推翻 —— **阈值是判据，不是目标**。
+- 影响：`serve/query.py` 不 import 任何 mcp 符号也不 import 任何 judge；绑定层只转发。附带结论：设计时"定 @3 不定 @1"的理由（给 LLM 三个候选自己挑）在当前实现下**不成立**，实测 @1/@3/@5 完全相同，排序维度是空的。
