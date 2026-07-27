@@ -22,3 +22,52 @@ class Embedder(Protocol):
     """
 
     def encode(self, texts: list[str]) -> list[list[float]]: ...
+
+
+DEFAULT_MODEL = "BAAI/bge-m3"
+
+_MISSING_DEP = (
+    "向量检索需要可选依赖，未安装。装它：\n"
+    "    uv sync --extra embed\n"
+    "（约 GB 级下载；默认的 uv sync 不装它，CI 也不装 —— "
+    "领域层的单测靠假 embedder 跑，不需要模型。）"
+)
+
+
+class BGEEmbedder:
+    """`sentence-transformers` 的一层薄包装。
+
+    **模型在首次 encode 时才加载，不在构造时**：eval 脚本会先构造再决定
+    要不要跑，构造即加载会让 `--help` 都要等几十秒下模型。
+    """
+
+    def __init__(self, model_name: str = DEFAULT_MODEL, *, device: str | None = None) -> None:
+        self.model_name = model_name
+        self._device = device
+        self._model = None
+
+    def _ensure_model(self):
+        if self._model is None:
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ModuleNotFoundError as exc:  # pragma: no cover - 见 test_embedding.py
+                raise ImportError(_MISSING_DEP) from exc
+            self._model = SentenceTransformer(self.model_name, device=self._device)
+        return self._model
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        model = self._ensure_model()
+        return [list(map(float, v)) for v in model.encode(texts, normalize_embeddings=True)]
+
+
+def build_embedder(model_name: str | None = None) -> Embedder:
+    """工厂：eval 脚本唯一的入口。
+
+    这里就地做一次依赖检查，好让"没装依赖"在脚本启动时报出人话，
+    而不是等第一次 encode 时抛一句 ModuleNotFoundError。
+    """
+    try:
+        import sentence_transformers  # noqa: F401
+    except ModuleNotFoundError as exc:
+        raise ImportError(_MISSING_DEP) from exc
+    return BGEEmbedder(model_name or DEFAULT_MODEL)

@@ -22,6 +22,14 @@ dependencies = [
     "mcp>=1.28,<2",
 ]
 
+[project.optional-dependencies]
+# 向量检索实验用。**刻意不进主依赖**：GB 级下载会让 uv sync 从秒级变成
+# 分钟级，而领域层的全部单测靠假 embedder 跑，不需要它。
+# 装法：uv sync --extra embed
+embed = [
+    "sentence-transformers>=3.0",
+]
+
 [project.scripts]
 ccg-validate = "cn_curriculum_graph.cli:main"
 ccg-generate = "cn_curriculum_graph.pipeline.run:main"
