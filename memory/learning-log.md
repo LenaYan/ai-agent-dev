@@ -25,7 +25,13 @@
 - **并发化必须守住的三条**（都是差点踩的）：产物顺序须与串行完全一致（两引擎对等性测试逐字节比对落盘产物，完成顺序泄漏进排列会让它变成随机红绿）；异常须在工作线程就地转成返回值（`executor.map` 惰性，一抛出后续结果就取不到，"单条失败不中断整批"会静默失效）；`PROGRAMMING_ERRORS` 须显式还原类型 raise（线程池会包装异常，这道防线在并发路径上否则失效）。
 - 产出：`docs/mcp-server-design.md`、`docs/source-corpus.md`、`docs/error-taxonomy.md`、`docs/concurrency-calibration.md`、`pipeline/concurrency.py`、`errors.py`、fidelity 三档 + `data/fidelity-eval-groundtruth.json`(20 条，全部取自真实判定) + `scripts/eval_fidelity.py`、`scripts/calibrate_concurrency.py`；284 测试。全程 TDD。
 - **图的现状（如实）**：64 节点 / 31 边 / 41% 孤立 / **最长前置链只有 3 层**，且那条链三个节点全在 G1、名字高度同义 —— 更像同一件事被切成三个节点，不是真实先修链。跨学段的链（整数→小数→分数→比和比例）没连出来。诊断线成立（75 条 misconceptions、126 条 evidence），规划线"能跑但薄"。
-- 下一步：**MCP server 领域层**（设计已定稿在 `docs/mcp-server-design.md`：纯函数 + 薄绑定、不塞 LLM、六工具两条线、诊断 ground truth 量 recall@3）。**边质量（剪枝策略 / 跨学段连边）是独立课题，不再阻塞 server。**
+- **下一步（断点很清楚，可直接接手）**：MCP server 尚未写一行代码，设计已定稿在 `docs/mcp-server-design.md`，无阻塞项。
+  1. 先写 `src/cn_curriculum_graph/serve/query.py`（纯函数领域层，**不 import 任何 mcp 符号**）：`load_graph` + 索引 + 六个工具的实现（`match_misconceptions` / `search_topics` / `get_topic` / `get_prerequisites` / `plan_path` / `get_graph_stats`）。全 TDD，fixture 图必须覆盖：带环、soft 边、revisits、孤儿、同名节点、空图。
+  2. `plan_path` 的 `known_ids` 语义已定死：传入 id 视为已掌握，**它自己和它的全部上游前置一并剔除**（设计文档 §3 有论证，别改成只剔除自身）。
+  3. 再写 `mcp_server.py`（`mcp==1.28.1` 的 FastMCP，十几行转发）。**v2 稳定版目标日期是 2026-07-28，届时加第二个绑定做对比，领域层与测试一行不动。**
+  4. 诊断评测：`data/diagnosis-eval-groundtruth.json` >=16 条 + `scripts/eval_diagnosis.py`，阈值 `recall@3 >= 0.75`。样本要含同义换词、跨年级同主题、以及**应当召回不到任何东西**的样本。
+  5. 验收不是测试绿，是接进 Claude Code 真跑两段对话（诊断 + 规划），看 `misconceptions`/`evidence` 有没有真的进入 agent 的回答 —— 产出一段实录 + 诚实评价，包括"某字段其实没被用上"这种结论。
+- **已知未修（都不阻塞下一步，但别忘了）**：①`dropped.json` 跨运行累加从不清空，报告系统性虚高；修法要绕开 checkpoint 重入对 append 幂等的依赖，得配测试。②`source_span` 被抽取层截窄，导致 fidelity 拿到残缺上下文（fidelity 评测里那条"计算器"漏报就是它造成的）。③`dedupe` 仍是串行，是下一个并发瓶颈候选。④边质量：31 条边里最长链只有 3 层且疑似同义节点串，跨学段前置没连出来 —— 独立课题，涉及 edges 层剪枝策略。
 
 ## 2026-07-27 — 接真模型上量前的三件事：三条原判断全被自己推翻
 - **元收获（比三条技术结论都值钱）**：这三件事都是上一轮实验**自己写进待办**的"已知技术债"，条条言之凿凿。真去还债时，**三条的前提全部不成立**。共同的病根：待办是在**读到一句警告 / 想到一个理论风险**的当下写的，没有一条是"实测到症状"之后写的。教训不是"别写待办"，而是**待办要标清"这条是实测出来的还是推断出来的"**——推断类待办在动手前必须先花十分钟证伪，否则会照着一个错误前提去改，而"照错误前提改出来的东西"可能比不改更糟（第 ③ 条就是活例子）。
