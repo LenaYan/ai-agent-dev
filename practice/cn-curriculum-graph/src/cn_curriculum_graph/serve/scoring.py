@@ -166,8 +166,9 @@ def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
 class VectorScorer:
     """向量打分：余弦相似度 + 按文本记忆的向量缓存。
 
-    缓存不是优化，是可行性：语料 ~150 条文本，每次查询要跟其中每一条比
-    一遍，不缓存就是每次查询几百次 encode。`warm` 让整个语料一次编码完。
+    缓存不是优化，是可行性：语料有数百条文本（实测规模见
+    `docs/rag-vs-literal.md`），每次查询要跟其中每一条比一遍，不缓存就是
+    每次查询几百次 encode。`warm` 让整个语料一次编码完。
 
     **默认阈值 0.5 是占位，不是调优结果。** 真值由
     `scripts/eval_diagnosis.py --threshold-sweep` 扫出前沿后，在与字面基线

@@ -53,6 +53,81 @@ def test_load_graph_rejects_malformed_graph(tmp_path):
         load_graph(path)
 
 
+# --- 打分器替换点：GraphIndex 与 Scorer 协议的接线 -----------------------
+#
+# 这条边界此前零测试覆盖：全仓只有 tests/test_eval_diagnosis.py 一处向
+# GraphIndex 注入 scorer，用的还是真 LiteralScorer；tests/serve/test_vector_scoring.py
+# 只单独测 VectorScorer，从未穿过 query.py。下面两条钉住两件事：
+# ① GraphIndex.__init__ 真的会 warm(整个语料)——这是"建索引时一次编码完
+#    语料"这条代价前提唯一的保障，warm 被删掉的话向量路径仍然"正确"
+#    （缓存惰性填），只是代价数字错一个数量级，而且不会有任何测试变红；
+# ② 换掉 scorer 真的会改变 search_topics / match_misconceptions 的行为，
+#    不是被某处缓存或短路绕过。
+
+
+class RecordingScorer:
+    """假打分器：记录 warm 收到什么、relevance 被调用几次，恒打满分。
+
+    不做真实相关度判断——用于证明"协议真的被调用"，不是为了测打分效果
+    （打分效果是 LiteralScorer / VectorScorer 各自契约测试的事）。
+    """
+
+    min_relevance = 0.0
+
+    def __init__(self) -> None:
+        self.warmed_with: list[str] | None = None
+        self.relevance_calls = 0
+
+    def warm(self, texts) -> None:
+        self.warmed_with = list(texts)
+
+    def relevance(self, query: str, target: str) -> float:
+        self.relevance_calls += 1
+        return 1.0
+
+
+def test_graph_index_warms_the_scorer_with_the_full_corpus():
+    """建索引必须调用 scorer.warm(corpus)——"一次编码完语料"这条代价前提
+    （建索引 10.5s / encode_calls=375 这两个数字）成立的全部依据都在这一行。
+    若它被删掉，向量路径仍然能跑通（缓存惰性填），只是每次查询都要
+    重新 encode，代价数字错 100 倍，而其余测试全绿看不出来。"""
+    t = topic(
+        "A",
+        misconceptions=[
+            Misconception(statement="s", probe="p", correction_hint="c"),
+        ],
+    )
+    scorer = RecordingScorer()
+
+    GraphIndex(graph(topics=[t]), scorer=scorer)
+
+    assert scorer.warmed_with == ["节点A", "节点A的描述", "s", "p", "c"]
+
+
+def test_swapping_the_scorer_changes_search_and_match_behavior():
+    """换 scorer 必须真的改变 search_topics / match_misconceptions 的结果，
+    不能被某个缓存或短路路径绕开。用一个恒打满分的假 scorer 反证：
+    字面版对无关查询返回空，换成这个假 scorer 后同一个查询必须能召回。"""
+    t = topic(
+        "A",
+        misconceptions=[
+            Misconception(statement="1/8 比 1/5 大", probe="哪个大？", correction_hint="份数越多每份越小"),
+        ],
+    )
+    unrelated_query = "孩子背古诗老记不住"
+
+    literal_index = _index(topics=[t])
+    assert search_topics(literal_index, unrelated_query) == []
+    assert match_misconceptions(literal_index, unrelated_query) == []
+
+    recording = RecordingScorer()
+    recording_index = GraphIndex(graph(topics=[t]), scorer=recording)
+
+    assert len(search_topics(recording_index, unrelated_query)) == 1
+    assert len(match_misconceptions(recording_index, unrelated_query)) == 1
+    assert recording.relevance_calls > 0
+
+
 # --- get_topic ----------------------------------------------------------
 
 

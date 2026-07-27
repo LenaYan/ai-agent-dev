@@ -110,18 +110,25 @@ class FrontierPoint:
     empty_accuracy: float
 
 
-def sweep_thresholds(index, cases, scorer, thresholds, *, limit: int = 5) -> list[FrontierPoint]:
-    """同一个打分器、同一份语料，只挪阈值。
+def sweep_thresholds(index, cases, thresholds, *, limit: int = 5) -> list[FrontierPoint]:
+    """在 `index` 已装配的打分器（`index.scorer`）上，同一份语料只挪阈值。
 
-    复用同一个 scorer 实例是**必须的**：向量打分器的缓存让整轮扫描只编码
-    一次语料。每个阈值新建一个 scorer 会把扫描变成 N 倍的模型调用。
+    **只认 `index.scorer`，不接受调用方另传一个 scorer 实例**：
+    `match_misconceptions` / `search_topics` 读的是 `index.scorer.min_relevance`，
+    若这里改的是另一个对象的阈值，`index` 内部用的还是旧值——扫描不报错，
+    只是悄悄产出一条**完全平坦的前沿**，和"这个打分器判别力不够"长得
+    一模一样，观感上无法区分。删掉这个参数、直接读 `index.scorer`，
+    让整类错误在类型层面消失。
 
-    注意：`LiteralScorer.min_relevance` 是类属性，`original = scorer.min_relevance`
-    读到的是类属性；扫完在 `finally` 里写回时会在这个实例上留下一个同名的
-    **实例属性**（遮蔽类属性，值相同，功能无害）。以后若有代码假设
-    "读类属性就等于读某个 scorer 实例的默认阈值"，这里会不成立。
+    复用同一个 scorer 实例（而不是每个阈值重建一个）仍然是**必须的**：
+    向量打分器的缓存让整轮扫描只编码一次语料，重建 scorer 会把扫描变成
+    N 倍的模型调用——这正是 `index.scorer` 天然满足、不需要额外保障的地方。
+
+    （`LiteralScorer.min_relevance` 是类属性，写回 `original` 时会在这个
+    实例上留下一个同名实例属性，遮蔽类属性，值相同，功能无害。）
     """
     points = []
+    scorer = index.scorer
     original = scorer.min_relevance
     try:
         for threshold in thresholds:
@@ -197,9 +204,8 @@ def literal_baseline(graph, cases, *, limit: int = 5) -> FrontierPoint | None:
     不调用 `build_embedder`，几秒内跑完，不碰任何可选依赖。
     """
     thresholds = threshold_range(*LITERAL_BASELINE_SWEEP)
-    scorer = LiteralScorer()
-    index = GraphIndex(graph, scorer=scorer)
-    frontier = sweep_thresholds(index, cases, scorer, thresholds, limit=limit)
+    index = GraphIndex(graph, scorer=LiteralScorer())
+    frontier = sweep_thresholds(index, cases, thresholds, limit=limit)
     return same_operating_point(frontier)
 
 
@@ -255,7 +261,7 @@ def main() -> int:
 
     if args.threshold_sweep:
         thresholds = threshold_range(args.sweep_from, args.sweep_to, args.sweep_step)
-        frontier = sweep_thresholds(index, cases, scorer, thresholds, limit=args.limit)
+        frontier = sweep_thresholds(index, cases, thresholds, limit=args.limit)
         print(f"{'阈值':<8}{'recall@3':<12}空样本正确率")
         print("-" * 40)
         for point in frontier:

@@ -177,15 +177,14 @@ def test_sweep_returns_one_point_per_threshold():
     from cn_curriculum_graph.serve.scoring import LiteralScorer
     from conftest import graph, topic
 
-    # 注意 1：scorer 必须与 index 共用同一个实例（真实 CLI 就是这么接的，
-    # 见 eval_diagnosis.main() ）—— match_misconceptions 读的是
-    # index.scorer.min_relevance，若 sweep 拿一个新建的 scorer 去改
-    # min_relevance，改的是另一个对象，index 内部用的还是默认阈值 0.2，
-    # 扫描形同虚设（brief 原文的调用方式就踩了这个坑）。
-    # 注意 2：观察句不能让 statement 整段被当作连续子串包住 ——
-    # LiteralScorer._relevance 取双向覆盖率的大者，一旦 statement 的全部
-    # 二元组都出现在 query 里，反方向覆盖率恒为 1.0，任何 <=1.0 的阈值都
-    # 筛不掉它，阈值扫描同样测不出效果（brief 原文的观察句也踩了这个坑）。
+    # sweep_thresholds 只认 index.scorer（不接受调用方另传一个 scorer 实例，
+    # 见 sweep_thresholds 自己的 docstring）——这里的 scorer 只是为了在
+    # GraphIndex 构造时传入同一个对象，不再作为参数喂给 sweep_thresholds。
+    #
+    # 观察句不能让 statement 整段被当作连续子串包住 —— LiteralScorer._relevance
+    # 取双向覆盖率的大者，一旦 statement 的全部二元组都出现在 query 里，
+    # 反方向覆盖率恒为 1.0，任何 <=1.0 的阈值都筛不掉它，阈值扫描同样测不出
+    # 效果（brief 原文的观察句就踩了这个坑）。
     scorer = LiteralScorer()
     index = GraphIndex(
         graph(topics=[topic("A", misconceptions=[
@@ -195,11 +194,46 @@ def test_sweep_returns_one_point_per_threshold():
     )
     cases = [{"id": "c1", "observation": "孩子坚持八分之一比五分之一还要大", "expected_topic_ids": ["A"]}]
 
-    frontier = sweep_thresholds(index, cases, scorer, [0.1, 0.3, 0.9])
+    frontier = sweep_thresholds(index, cases, [0.1, 0.3, 0.9])
 
     assert [p.threshold for p in frontier] == [0.1, 0.3, 0.9]
     assert frontier[0].recall_at_3 == 1.0
     assert frontier[-1].recall_at_3 == 0.0
+
+
+def test_sweep_thresholds_ignores_whatever_min_relevance_the_scorer_already_has():
+    """CLI help 文案承诺"扫描模式下 --min-relevance 无效"——这条契约当前
+    成立（sweep_thresholds 对每个阈值都无条件覆写 index.scorer.min_relevance），
+    但此前没有测试钉住它。破坏它的症状是"前沿表看起来正常，但工作点是错的"，
+    不会报错、也不会让前沿表本身变形，很难在评审里被肉眼发现。
+
+    这里直接验证契约本身：同一份图、同一组阈值，不管调用前 scorer 的
+    min_relevance 停在哪个值上，扫出来的前沿必须逐点相同。"""
+    from eval_diagnosis import sweep_thresholds
+
+    from cn_curriculum_graph.models import Misconception
+    from cn_curriculum_graph.serve.query import GraphIndex
+    from cn_curriculum_graph.serve.scoring import LiteralScorer
+    from conftest import graph, topic
+
+    g = graph(topics=[topic("A", misconceptions=[
+        Misconception(statement="1/8 比 1/5 大", probe="哪个大？", correction_hint="份数越多每份越小"),
+    ])])
+    cases = [{"id": "c1", "observation": "孩子坚持八分之一比五分之一还要大", "expected_topic_ids": ["A"]}]
+    thresholds = [0.1, 0.3, 0.9]
+
+    default_scorer = LiteralScorer()
+    default_index = GraphIndex(g, scorer=default_scorer)
+    frontier_from_default = sweep_thresholds(default_index, cases, thresholds)
+
+    # 模拟 CLI 里先跑过 --min-relevance 0.9（逐条模式）、扫描模式复用同一个
+    # 打分器实例的情形：min_relevance 在调用前已经被覆写过。
+    overridden_scorer = LiteralScorer()
+    overridden_scorer.min_relevance = 0.9
+    overridden_index = GraphIndex(g, scorer=overridden_scorer)
+    frontier_from_overridden = sweep_thresholds(overridden_index, cases, thresholds)
+
+    assert frontier_from_default == frontier_from_overridden
 
 
 def test_same_operating_point_picks_the_best_recall_at_full_empty_accuracy():

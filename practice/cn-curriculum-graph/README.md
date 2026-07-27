@@ -8,7 +8,7 @@
 
 **当前进度：地基 + 生成流水线 + MCP 暴露层已跑通。** schema 定义、CI 校验层、
 六层生成流水线（切分 → 抽取 → 去重 → 连边 → 交叉审核 → 组装）、
-把图暴露给 agent 的 MCP server 均已完成，393 个测试，
+把图暴露给 agent 的 MCP server 均已完成，396 个测试，
 并已接真模型端到端跑通（64 节点 / 31 边）。产出的图数据**不入库**（见下方「许可与来源」）。
 
 > ⚠️ 这个项目的**真正资产是流水线，不是数据集**。
@@ -20,7 +20,7 @@
 
 ```bash
 uv sync
-uv run pytest                        # 393 个测试
+uv run pytest                        # 396 个测试
 uv run ccg-validate data/example-graph.json  # 校验一份图数据（默认跳过语义一致性，留 CONSISTENCY_SKIPPED 警告）
 
 uv run python scripts/export_schema.py   # 重新导出 JSON Schema
@@ -47,12 +47,16 @@ uv run python scripts/eval_diagnosis.py --min-relevance 0.15   # 逐条明细停
 uv sync --extra embed                # 装 sentence-transformers（实测 .venv +744M）
 uv run python scripts/eval_diagnosis.py --scorer vector --threshold-sweep
 uv run python scripts/eval_diagnosis.py --scorer vector --model Qwen/Qwen3-Embedding-0.6B  # 换模型是一行
+# ⚠️ 换成 Qwen3-Embedding 前先看清楚：它官方推荐查询侧加
+# "Instruct: ...\nQuery: ..." 前缀，文档侧不加。当前 Embedder 协议是
+# encode(texts)，不区分谁是 query 谁是 doc，换这个模型会悄悄拿到偏低的分数，
+# 容易被误记成"换个模型也没赢"。
 ```
 
 > ⚠️ 首次运行会下模型：`BAAI/bge-m3` **实测落盘 4.3G**（其中一半是
 > `transformers` 5.x 后台从 PR 分支另抓的一份 safetensors），耗时 >10 分钟，
 > 落在 `~/.cache/huggingface/hub`（仓库外）。默认 `uv sync` 不装它，CI 也不装 ——
-> **领域层的测试全靠假 embedder 跑，卸掉模型库后 393 个测试一个不掉。**
+> **领域层的测试全靠假 embedder 跑，卸掉模型库后 396 个测试一个不掉。**
 
 **结论：向量没有赢。** 同工作点（空样本正确率 = 100%）上
 **字面 89%（阈值 0.15）vs 向量 79%（阈值 0.7）**，且向量的命中集是字面命中集的
@@ -387,7 +391,9 @@ assessmentPrompt 之间，不在 name 与 description 之间，因此刻意没�
    一条靠调阈值免费修好、另外两条向量和字面一起失手 —— **立项理由本身没站住**；
    **(c)** 10 个百分点在 n=19 上只等于 2 条样本（McNemar p = 0.5，统计上区分
    不开），所以能说的是"向量没赢 + 代价确定"，**不能**说"字面显著更优"。
-   下一个受控变量若要继续，应是 hybrid（两者失败模式不重合）而非换模型。
+   换模型是一行；**hybrid 不是** —— 排名融合需要打分器看到候选集，现协议
+   （成对打分）给不了，那一步要先扩协议（或换成 `Retriever` 形状），详见
+   `docs/rag-vs-literal.md` §6.6/§6.7。
 
 > 法律定性（课标著作权，`docs/feasibility-analysis.md`）只卡"大规模生成 + 对外发布"；
 > 本地自用的流水线跑通不受影响。

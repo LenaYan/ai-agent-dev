@@ -3,7 +3,7 @@
 **这层刻意写薄**（论证见 docs/mcp-server-design.md §2）：MCP Python SDK
 v2 会把 `FastMCP` 更名 `MCPServer`、协议从有状态双向改成无状态请求/响应，
 v1.28.1 官方已标注维护模式。真到那天，要重写的只有这个文件 ——
-`serve/query.py` 与它的 51 条测试一行不动。
+`serve/query.py` 与它的全部单测一行不动。
 
 工具的 description 不是文档，是**唯一的调用依据**：agent 只凭它决定要不要
 调、传什么。所以每条都写清"什么时候用它"和"它不做什么"，
