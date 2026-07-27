@@ -10,7 +10,11 @@ from cn_curriculum_graph.serve.scoring import LiteralScorer, normalize_math
 
 def test_literal_scorer_carries_its_own_threshold():
     """阈值是打分器的性质，不是检索的性质：余弦与覆盖率的标度完全不同，
-    同一个 0.2 在两者上不是一回事。"""
+    同一个 0.2 在两者上不是一回事。
+
+    2026-07-28 试过改成 0.15（评测上 +5pp 召回且空样本仍 100%），因为它放进来
+    一个偶然字重叠的误招而改回 —— 详见 `LiteralScorer.min_relevance` 上方注释，
+    以及 `test_match_misconceptions_returns_empty_when_nothing_is_close`。"""
     assert LiteralScorer().min_relevance == 0.2
 
 
