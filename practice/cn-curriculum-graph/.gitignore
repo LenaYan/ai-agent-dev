@@ -7,5 +7,6 @@ data/generated/
 # （见 docs/feasibility-analysis.md 闸门 1 —— 此前 data/source/example.md
 #  被跟踪，等于把真实课标条目提交进了公开仓库，是这条闸门的一个漏洞）。
 # 只保留说明文件，语料由使用者本地准备。
-data/source/*
-!data/source/README.md
+# 说明文件挪到 docs/source-corpus.md —— 放在 data/source/ 里会被 split_source
+# 的 *.md glob 当成语料切一遍（实测产生 17 条 NO_STANDARD_CODE 噪声）。
+data/source/

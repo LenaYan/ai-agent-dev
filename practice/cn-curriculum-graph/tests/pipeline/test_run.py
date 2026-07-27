@@ -10,6 +10,7 @@ import pytest
 
 from cn_curriculum_graph.pipeline.dedupe import SameTopicVerdict
 from cn_curriculum_graph.pipeline.graph import run_pipeline_lg
+from cn_curriculum_graph.pipeline.review import FidelityVerdict
 from cn_curriculum_graph.pipeline.models import (
     DraftBatch,
     DraftContent,
@@ -81,7 +82,7 @@ def _fake_deps() -> PipelineDeps:
         extractor=extractor,
         same_topic_judge=same_topic,
         edge_proposer=proposer,
-        fidelity_judges=[lambda d: Vote(reviewer="fake", approved=True, reason="ok")],
+        fidelity_judges=[lambda d: FidelityVerdict(reason="ok", judgment="faithful", reviewer="fake")],
         name_judges=[lambda name, description: Verdict(judgment="consistent")],
         edge_judges=[lambda t, e: Vote(reviewer="fake", approved=True, reason="ok")],
     )
@@ -91,8 +92,10 @@ def _deps_rejecting(rejected_name: str) -> PipelineDeps:
     """除指定名称外全部通过 fidelity 的 deps，用于制造"基础节点被淘汰"场景。"""
     deps = _fake_deps()
     deps.fidelity_judges = [
-        lambda d: Vote(
-            reviewer="fake", approved=d.content.name != rejected_name, reason="测试"
+        lambda d: FidelityVerdict(
+            reason="测试",
+            judgment="faithful" if d.content.name != rejected_name else "fabricated",
+            reviewer="fake",
         )
     ]
     return deps
@@ -214,7 +217,7 @@ def test_all_drafts_rejected_by_review_yields_empty_generation_error(tmp_path, e
 
     deps = _fake_deps()
     deps.fidelity_judges = [
-        lambda d: Vote(reviewer="fake", approved=False, reason="全部否决")
+        lambda d: FidelityVerdict(reason="全部否决", judgment="fabricated", reviewer="fake")
     ]
 
     findings = _run(
@@ -245,10 +248,10 @@ def test_edge_prerequisite_rejected_by_review_is_recorded_not_silently_dropped(t
     deps = _fake_deps()
     # 只否决前置节点（3.1.1，被抽成"认识100以内的数"），目标节点保留
     deps.fidelity_judges = [
-        lambda d: Vote(
-            reviewer="fake",
-            approved=d.content.name != "认识100以内的数",
+        lambda d: FidelityVerdict(
             reason="仅否决前置",
+            judgment="faithful" if d.content.name != "认识100以内的数" else "fabricated",
+            reviewer="fake",
         )
     ]
 
@@ -275,10 +278,10 @@ def test_edge_target_rejected_by_review_is_recorded_not_silently_dropped(tmp_pat
     deps = _fake_deps()
     # 只否决边的目标节点（3.1.2，被抽成"100以内加减法"），前置节点保留
     deps.fidelity_judges = [
-        lambda d: Vote(
-            reviewer="fake",
-            approved=d.content.name != "100以内加减法",
+        lambda d: FidelityVerdict(
             reason="仅否决目标",
+            judgment="faithful" if d.content.name != "100以内加减法" else "fabricated",
+            reviewer="fake",
         )
     ]
 
@@ -491,8 +494,10 @@ def test_conservation_invariant_holds_across_a_mixed_scenario(tmp_path, engine):
 
     def fidelity(draft):
         rejected_names = {"读写100以内的数", "小数的意义"}
-        return Vote(
-            reviewer="fake", approved=draft.content.name not in rejected_names, reason="仅否决两个"
+        return FidelityVerdict(
+            reason="仅否决两个",
+            judgment="fabricated" if draft.content.name in rejected_names else "faithful",
+            reviewer="fake",
         )
 
     deps = PipelineDeps(
@@ -839,7 +844,9 @@ def test_two_engines_produce_identical_dropped_json_when_all_rejected_and_review
     source.write_text(SOURCE, encoding="utf-8")
 
     deps = _fake_deps()
-    deps.fidelity_judges = [lambda d: Vote(reviewer="fake", approved=False, reason="全部否决")]
+    deps.fidelity_judges = [
+        lambda d: FidelityVerdict(reason="全部否决", judgment="fabricated", reviewer="fake")
+    ]
 
     def boom(*args, **kwargs):
         raise RuntimeError("模拟 review_edges 层崩溃")

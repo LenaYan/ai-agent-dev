@@ -67,6 +67,7 @@ from cn_curriculum_graph.pipeline import edges as edges_mod
 from cn_curriculum_graph.pipeline.dedupe import SameTopicVerdict
 from cn_curriculum_graph.pipeline.faults import FaultSpec, wrap_deps
 from cn_curriculum_graph.pipeline.graph import run_pipeline_lg
+from cn_curriculum_graph.pipeline.review import FidelityVerdict
 from cn_curriculum_graph.pipeline.models import (
     DraftBatch,
     DraftContent,
@@ -228,7 +229,7 @@ def _make_extractor(names: dict[str, tuple[str, int]]):
 
 def _fidelity_judge_factory(i: int):
     def judge(draft):
-        return Vote(reviewer=f"fake-fidelity-{i}", approved=True, reason="ok")
+        return FidelityVerdict(reason="ok", judgment="faithful", reviewer=f"fake-fidelity-{i}")
 
     return judge
 

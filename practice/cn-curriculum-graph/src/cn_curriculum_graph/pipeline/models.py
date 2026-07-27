@@ -95,11 +95,23 @@ class TargetedEdge(BaseModel):
 
 
 class Vote(BaseModel):
+    """一票。`approved` 是后果，`judgment` 是原始档位。
+
+    **两者分开的理由**：三档判定（fidelity 的 faithful/reasonable_elaboration/
+    fabricated、name_desc 的 consistent/scope_mismatch/topic_mismatch）映射到
+    两级后果时会丢信息 —— `faithful` 与 `reasonable_elaboration` 都是
+    `approved=True`，但"这个描述比原文具体"这件事必须能被程序读出来，
+    而不是靠解析 `reason` 字符串。留痕要留成字段，不是留成文本。
+
+    二值判定器（边审核）不填 `judgment`，保持 None。
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     reviewer: str
     approved: bool
     reason: str = ""
+    judgment: str | None = None
 
 
 class ReviewOutcome(BaseModel):

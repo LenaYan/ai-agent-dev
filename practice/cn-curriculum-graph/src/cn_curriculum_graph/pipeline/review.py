@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -43,8 +43,72 @@ class _VotePayload(BaseModel):
     reason: str = ""
 
 
+# 三档而非 true/false —— 与 validators.consistency.Judgment 同源的设计决定，
+# 这里是它的**第二次实证**。
+#
+# 2026-07-27，28 条真实课标语料全量跑完：72 个 draft 里 45 个被 fidelity 淘汰
+# （62%），而这 45 条里 **21 条（47%）是分歧淘汰**，两个模型看法相反。分歧的
+# 形状是关键：
+#
+#   原文「理解数位的含义」→ 描述「理解个位、十位…的含义」
+#       flash ✅「合理展开」   pro ❌「凭空增加」
+#   原文「会比较万以内数的大小」→ 描述「…掌握从高位到低位逐位比较」
+#       flash ❌「额外增加」   pro ✅「合理具体化」
+#
+# **后一条的方向是反的。** 不是两个模型各有稳定立场，而是"合理展开算不算忠实"
+# 在二值框架下没有稳定答案 —— 模型每次随机塞进一个格子。
+#
+# 更根本的矛盾：课标条目是纲领性文字（"理解数位的含义"），知识依赖图的节点却
+# 必须是可教、可测的具体知识点。要求 description 严格忠于 source_span，等于
+# 要求节点停留在纲领的抽象层级 —— 那样的节点没法用。**忠实性与有用性在课标
+# 这类文本上直接冲突**，二值判定表达不了这个冲突，三档能。
+#
+# 用 Literal 而非 Enum：pydantic 会内联成 {"enum": [...]}，不生成 $defs 引用
+# —— 各家结构化输出/工具 schema 对 $ref 的支持参差不齐（见 memory 的三档判定那条）。
+FidelityJudgment = Literal["faithful", "reasonable_elaboration", "fabricated"]
+
+
+class _FidelityPayload(BaseModel):
+    """**给模型的 input_schema。字段顺序是有意的：`reason` 在 `judgment` 之前。**
+
+    工具调用的参数是顺序生成的，把判定放在理由前面等于让模型先投票再找理由。
+    旧的 `_VotePayload` 正是 `approved` 在前、`reason` 在后。这里反过来，
+    相当于结构化输出里的 CoT：先写依据，再落判定。
+
+    诚实说明：这一条是**设计改进，不是上面那组分歧统计支持的结论** ——
+    那组数据证明的是档位不够，不是字段顺序有害。两件事一起改，效果分别测。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = ""
+    judgment: FidelityJudgment
+
+
+class FidelityVerdict(_FidelityPayload):
+    """判定器的返回值 = 模型产出的两个字段 + 代码填的 `reviewer`。
+
+    `reviewer` 刻意**不在** `_FidelityPayload` 里 —— 模型不该自报家门（与
+    `_VotePayload` 的注释同源）。但它必须被保留下来：2026-07-27 那次分歧分析
+    （flash ✅ 合理展开 / pro ❌ 凭空增加）之所以做得出来，正是因为 outcomes
+    里记着是哪个模型投的哪一票。把它并成 `reviewer="fidelity"` 会让同类分析
+    在下一次直接失明。
+    """
+
+    reviewer: str = ""
+
+    @property
+    def is_faithful(self) -> bool:
+        """三档 → 两级后果：只有 `fabricated` 淘汰。
+
+        `reasonable_elaboration` 保留但留痕 —— 与 `scope_mismatch` 判 WARNING
+        而非 ERROR 是同一个取舍：真问题要拦住，灰区要留痕而不是拦住。
+        """
+        return self.judgment != "fabricated"
+
+
 class FidelityJudge(Protocol):
-    def __call__(self, draft: TopicDraft) -> Vote: ...
+    def __call__(self, draft: TopicDraft) -> FidelityVerdict: ...
 
 
 class EdgeJudge(Protocol):
@@ -61,13 +125,37 @@ class ReviewResult(BaseModel):
 
 
 _FIDELITY_SYSTEM = (
-    "你是知识图谱的数据质检员。"
-    "会给你一个知识点的『描述』和它声称的『原文出处』，"
-    "判断描述是不是确实出自这句原文。\n"
-    "判 approved=false：描述引入了原文里没有的内容，或与原文说的不是一回事。\n"
-    "判 approved=true：描述是对原文的忠实转写或合理概括。\n"
-    "措辞不同、更具体、更书面都算忠实；凭空增加的知识点不算。\n"
-    "reason 用一句中文说明依据。"
+    "你是课标知识图谱的数据质检员。"
+    "会给你一个知识点的『描述』和它声称的『原文出处』（一句课标条目）。\n"
+    "\n"
+    "**先在 reason 里写清依据，再给出 judgment。**\n"
+    "\n"
+    "课标条目是纲领性文字，往往只有一句话（如「理解数位的含义」）；"
+    "而知识点的描述需要具体到可教、可测。所以「比原文具体」是常态，不是问题。"
+    "你要区分的是「把原文讲的那件事说具体了」和「换了一件事说」。\n"
+    "\n"
+    "judgment 三选一：\n"
+    "- faithful：描述与原文说的是同一件事，只是措辞不同或更书面。\n"
+    "- reasonable_elaboration：描述把原文那件事**具体化**了 —— 列举了原文所指的"
+    "对象（如「数位」→「个位、十位、百位」）、点明了原文所指的方法（如「会比较"
+    "大小」→「从高位到低位逐位比较」）、或补上了原文动词的自然延伸（如「了解"
+    "符号的含义」→「能用符号表示大小关系」）。**这一档是合格的，不是问题。**\n"
+    "- fabricated：描述引入了原文之外的知识点，或与原文说的不是同一件事。"
+    "例如原文只说「知道用算盘可以表示多位数」，描述却讲起算盘的框、梁、档、"
+    "上珠、下珠 —— 那是另一个知识点，不是这句话的具体化。\n"
+    "\n"
+    "拿不准是 reasonable_elaboration 还是 fabricated 时，问自己：**去掉描述里"
+    "多出来的部分，剩下的还是原文那件事吗？** 是 → reasonable_elaboration；"
+    "多出来的部分本身就是一个独立知识点 → fabricated。\n"
+    # 试过在这里加一条「多出来的部分若够格当另一条课标条目 → fabricated」，
+    # 想压掉『大小比较』『用计算器』那两条漏报。**实测更差**：漏报从 2 涨到 3
+    # （「了解奇数、偶数、质数和合数」→「能判断奇数偶数」这条内容缺失的样本
+    # 反而被放行了）。推测是把注意力全引向「多写」，挤掉了「少写」。
+    # 保留这条失败记录而不是删掉：它说明 fidelity 其实有两个正交维度 ——
+    # **多写（编造）和少写（缺失）** —— 而现在这三档只覆盖了「多写」。
+    # 见 docs/mcp-server-design.md 的遗留问题一节。
+    "拿不准是 faithful 还是 reasonable_elaboration 时，倾向 reasonable_elaboration"
+    "（两者后果相同，都保留）。"
 )
 
 _EDGE_SYSTEM = (
@@ -81,7 +169,14 @@ _EDGE_SYSTEM = (
 
 
 class _DeepSeekVoter:
-    def __init__(self, tool_name: str, system: str, client: Any | None, model: str) -> None:
+    def __init__(
+        self,
+        tool_name: str,
+        system: str,
+        client: Any | None,
+        model: str,
+        payload_model: type[BaseModel] = _VotePayload,
+    ) -> None:
         if client is None:
             import anthropic  # 懒加载：注入 client 的测试无需装 anthropic
 
@@ -92,13 +187,19 @@ class _DeepSeekVoter:
         self._model = model
         self._tool_name = tool_name
         self._system = system
+        self._payload_model = payload_model
         self._tool = {
             "name": tool_name,
             "description": "记录审核结论",
-            "input_schema": _VotePayload.model_json_schema(),
+            "input_schema": payload_model.model_json_schema(),
         }
 
-    def _vote(self, prompt: str) -> Vote:
+    def _call(self, prompt: str) -> BaseModel:
+        """发一次强制工具调用，返回校验过的 payload。
+
+        两类判定器（二值的边审核、三档的 fidelity）共用这段网络与工具调用
+        管线，只有 payload 类型不同 —— 复制两份是"改一处漏一处"的温床。
+        """
         response = self._client.messages.create(
             model=self._model,
             max_tokens=1024,
@@ -112,21 +213,28 @@ class _DeepSeekVoter:
         for block in response.content:
             if block.type == "tool_use" and block.name == self._tool_name:
                 # 强制 tool_choice 只保证"调了工具"，不保证参数合法，仍要过一遍校验
-                payload = _VotePayload.model_validate(block.input)
-                # reviewer 由代码填 —— 模型不该自报家门
-                return Vote(
-                    reviewer=self._model, approved=payload.approved, reason=payload.reason
-                )
+                return self._payload_model.model_validate(block.input)
         raise ToolCallMissingError(f"模型未调用 {self._tool_name} 工具，返回：{response.content!r}")
+
+
+    def _vote(self, prompt: str) -> Vote:
+        payload = self._call(prompt)
+        # reviewer 由代码填 —— 模型不该自报家门
+        return Vote(reviewer=self._model, approved=payload.approved, reason=payload.reason)
 
 
 class DeepSeekFidelityJudge(_DeepSeekVoter):
     def __init__(self, client: Any | None = None, model: str = DEFAULT_MODEL) -> None:
-        super().__init__(FIDELITY_TOOL_NAME, _FIDELITY_SYSTEM, client, model)
+        super().__init__(
+            FIDELITY_TOOL_NAME, _FIDELITY_SYSTEM, client, model, payload_model=_FidelityPayload
+        )
 
-    def __call__(self, draft: TopicDraft) -> Vote:
-        return self._vote(
+    def __call__(self, draft: TopicDraft) -> FidelityVerdict:
+        payload = self._call(
             f"原文出处：{draft.content.source_span}\n\n描述：{draft.content.description}"
+        )
+        return FidelityVerdict(
+            reason=payload.reason, judgment=payload.judgment, reviewer=self._model
         )
 
 
@@ -185,7 +293,18 @@ def review_drafts(
         # 而不是放行；原因码与普通的 REVIEW_REJECTED 区分开，便于区分
         # "评审说不行" 和 "评审根本没跑起来"。
         try:
-            fidelity_votes = [judge(draft) for judge in fidelity_judges]
+            # 三档 → 两级：faithful / reasonable_elaboration 都算通过，只有
+            # fabricated 淘汰。档位本身写进 Vote.judgment 留痕（见 Vote 文档）——
+            # "这个描述比原文具体"必须能被程序读出来，否则等于没留。
+            fidelity_votes = [
+                Vote(
+                    reviewer=v.reviewer or "fidelity",
+                    approved=v.is_faithful,
+                    reason=v.reason,
+                    judgment=v.judgment,
+                )
+                for v in (judge(draft) for judge in fidelity_judges)
+            ]
         except PROGRAMMING_ERRORS:  # 程序 bug，不该伪装成判定器失败，直接冒泡
             raise
         except Exception as exc:  # noqa: BLE001 —— 单条目失败不中断整批

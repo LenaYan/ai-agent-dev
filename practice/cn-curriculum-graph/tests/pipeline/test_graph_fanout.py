@@ -23,6 +23,7 @@ from cn_curriculum_graph.pipeline import graph_fanout as graph_fanout_mod
 from cn_curriculum_graph.pipeline.graph import retry_on
 from cn_curriculum_graph.pipeline.graph_fanout import build_fanout_graph, run_pipeline_fanout
 from cn_curriculum_graph.pipeline.models import DraftBatch, Vote
+from cn_curriculum_graph.pipeline.review import FidelityVerdict
 from cn_curriculum_graph.runner import has_errors
 
 from .test_run import SOURCE, _content, _fake_deps
@@ -284,7 +285,7 @@ def test_fanout_bounds_concurrent_review_calls(tmp_path):
         time.sleep(0.05)
         with lock:
             state["current"] -= 1
-        return Vote(reviewer="fake", approved=True, reason="ok")
+        return FidelityVerdict(reason="ok", judgment="faithful", reviewer="fake")
 
     deps = _fake_deps()
     deps.fidelity_judges = [fidelity_judge]

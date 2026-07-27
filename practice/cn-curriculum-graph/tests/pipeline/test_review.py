@@ -12,7 +12,11 @@ from types import SimpleNamespace
 import pytest
 
 from cn_curriculum_graph.pipeline.models import DraftContent, ProposedEdge, TopicDraft, Vote
+from typing import get_args
+
 from cn_curriculum_graph.pipeline.review import (
+    FidelityJudgment,
+    FidelityVerdict,
     FIDELITY_TOOL_NAME,
     DeepSeekFidelityJudge,
     detect_orphans,
@@ -44,8 +48,15 @@ def _draft(draft_id: str = "a", name: str = "小数的意义") -> TopicDraft:
 
 
 def _fidelity(approved: bool, reviewer: str = "fake"):
-    def judge(draft: TopicDraft) -> Vote:
-        return Vote(reviewer=reviewer, approved=approved, reason="测试")
+    """二值替身，映射到三档：True→faithful，False→fabricated。
+
+    保留这个 helper 而不是全量改写既有测试：它们表达的是"通过/不通过"这层
+    语义，与档位无关，改成三档反而模糊了各自的测试意图。"""
+
+    def judge(draft: TopicDraft) -> FidelityVerdict:
+        return FidelityVerdict(
+            reason="测试", judgment="faithful" if approved else "fabricated", reviewer=reviewer
+        )
 
     return judge
 
@@ -139,10 +150,10 @@ def test_fidelity_judge_failure_drops_the_draft_conservatively_without_crashing(
     让 run_pipeline 整体崩掉、丢光前几层的 LLM 花费。判定器没能表态时，
     按本层"分歧即淘汰"的精神保守处理：该草稿判为未通过，而不是放行。"""
 
-    def flaky_fidelity(draft: TopicDraft) -> Vote:
+    def flaky_fidelity(draft: TopicDraft) -> FidelityVerdict:
         if draft.draft_id == "a":
             raise RuntimeError("429")
-        return Vote(reviewer="fake", approved=True, reason="ok")
+        return FidelityVerdict(reason="ok", judgment="faithful", reviewer="fake")
 
     other_draft = _draft("b", "另一个知识点")
     result = review_drafts(
@@ -288,12 +299,14 @@ def _fake_client(recorder: dict, tool_input: dict):
 
 def test_deepseek_fidelity_judge_shows_both_description_and_source_span():
     recorder: dict = {}
-    client = _fake_client(recorder, {"approved": False, "reason": "描述超出原文"})
+    client = _fake_client(recorder, {"reason": "描述超出原文", "judgment": "fabricated"})
 
-    vote = DeepSeekFidelityJudge(client=client, model="deepseek-v4-pro")(_draft())
+    verdict = DeepSeekFidelityJudge(client=client, model="deepseek-v4-pro")(_draft())
 
-    assert vote.approved is False
-    assert vote.reviewer == "deepseek-v4-pro"
+    assert verdict.is_faithful is False
+    assert verdict.judgment == "fabricated"
+    # reviewer 由代码填、不问模型 —— 但必须保留下来，否则跨模型分歧分析会失明
+    assert verdict.reviewer == "deepseek-v4-pro"
     payload = str(recorder["messages"])
     assert "理解小数表示十进制分数" in payload
     assert "能理解小数的意义" in payload
@@ -360,3 +373,109 @@ def test_detect_orphans_ignores_drafts_that_kept_at_least_one_prerequisite():
     kept = {"child": [ProposedEdge(prerequisite_draft_id="alive", strength="soft", reason="因")]}
 
     assert detect_orphans([survivor], proposed_before, kept_edges=kept) == []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# fidelity 三档化（2026-07-27）
+#
+# 动机来自 28 条真实课标语料的一次全量运行：72 个 draft 里 45 个被 fidelity
+# 淘汰（62%），而这 45 条里 **21 条（47%）是分歧淘汰** —— 两个模型看法相反。
+# 分歧的样子说明了一切：
+#
+#   原文「理解数位的含义」→ 描述「理解个位、十位…的含义」
+#       flash ✅「合理展开」   pro ❌「凭空增加」
+#   原文「会比较万以内数的大小」→ 描述「…掌握从高位到低位逐位比较」
+#       flash ❌「额外增加」   pro ✅「合理具体化」
+#
+# **注意后一条的方向是反的。** 不是两个模型各有稳定立场，是"合理展开算不算
+# 忠实"这个判断在二值框架下没有稳定答案 —— 模型每次随机塞进一个格子。
+#
+# 这是 memory 里那条教训的第二次实证（第一次是 name/desc judge 从二值扩到
+# 三档）：**判定档位不够时，模型不会告诉你"没有合适的选项"，它会硬塞进现有
+# 某一档。** 缺的第三档是「原文的合理具体化」。
+#
+# 更深一层的矛盾（三档要解决的根本问题）：课标条目是纲领性文字（"理解数位的
+# 含义"），而知识依赖图的节点必须是可教、可测的具体知识点。要求 description
+# 严格忠于 source_span，等于要求节点停留在纲领的抽象层级 —— 那样的节点没法用。
+# **忠实性和有用性在课标这种文本上直接冲突**，二值判定无法表达这个冲突。
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _fidelity_v(judgment: str, reviewer: str = "fake"):
+    """三档 fidelity 判定器替身。"""
+
+    def judge(draft: TopicDraft) -> FidelityVerdict:
+        return FidelityVerdict(reason=f"{reviewer}说{judgment}", judgment=judgment)
+
+    return judge
+
+
+def test_fidelity_verdict_has_three_tiers_not_two():
+    """档位数是产品决策，不是实现细节 —— 钉死它。"""
+    assert set(get_args(FidelityJudgment)) == {
+        "faithful",
+        "reasonable_elaboration",
+        "fabricated",
+    }
+
+
+def test_only_fabricated_drops_the_draft():
+    """三档 → 两级后果：faithful / reasonable_elaboration 都保留，只有
+    fabricated 淘汰。这正是把 45 条淘汰里那 21 条灰区救回来的那一步。"""
+    kept = review_drafts(
+        [_draft()],
+        fidelity_judges=[_fidelity_v("reasonable_elaboration")],
+        name_judges=[_name_judge("consistent")],
+    )
+    assert len(kept.kept) == 1, "合理展开不该被淘汰"
+
+    dropped = review_drafts(
+        [_draft()],
+        fidelity_judges=[_fidelity_v("fabricated")],
+        name_judges=[_name_judge("consistent")],
+    )
+    assert dropped.kept == []
+    assert dropped.drops[0].reason == "REVIEW_REJECTED"
+
+
+def test_reasonable_elaboration_is_kept_but_leaves_a_trace():
+    """保留 ≠ 无声通过。合理展开必须在 review-log 里留痕，否则"这个节点的描述
+    比原文具体"这件事就永远没人知道 —— 与 scope_mismatch 的处理一致
+    （见 test_scope_mismatch_keeps_the_draft_but_records_the_outcome）。"""
+    result = review_drafts(
+        [_draft()],
+        fidelity_judges=[_fidelity_v("reasonable_elaboration", "甲")],
+        name_judges=[_name_judge("consistent")],
+    )
+
+    fid = [o for o in result.outcomes if o.aspect == "fidelity"]
+    assert len(fid) == 1
+    assert fid[0].approved is True
+    assert fid[0].votes[0].judgment == "reasonable_elaboration", (
+        "档位要能被程序读出来，不能只埋在 reason 字符串里"
+    )
+
+
+def test_disagreement_between_tiers_still_drops_conservatively():
+    """一个判 faithful、一个判 fabricated —— 分歧即淘汰的原则不变。
+    三档化解决的是"灰区被随机塞格子"，不是放松分歧处理。"""
+    result = review_drafts(
+        [_draft()],
+        fidelity_judges=[_fidelity_v("faithful", "甲"), _fidelity_v("fabricated", "乙")],
+        name_judges=[_name_judge("consistent")],
+    )
+
+    assert result.kept == []
+
+
+def test_fidelity_tool_schema_puts_reason_before_judgment():
+    """字段顺序不是排版偏好 —— 工具调用是顺序生成的，`judgment` 放在 `reason`
+    前面等于让模型**先投票再找理由**。旧的 `_VotePayload` 正是 approved 在前。
+
+    把 reason 放前面，是结构化输出里 CoT 的等价物：先写依据，再落判定。
+    （说明：这一条是设计改进，不是上面那次分歧统计支持的结论 —— 那组数据
+    证明的是档位不够，不是字段顺序有害。这里单独修，效果另测。）
+    """
+    props = list(FidelityVerdict.model_json_schema()["properties"].keys())
+
+    assert props.index("reason") < props.index("judgment")

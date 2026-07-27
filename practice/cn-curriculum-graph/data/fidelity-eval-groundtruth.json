@@ -1,0 +1,128 @@
+{
+  "_about": "fidelity 三档判定的评测标尺。样本全部取自 2026-07-27 那次 28 条真实课标语料的全量运行（72 个 draft 的实际判定），不是手工编造 —— 上一轮 name/desc judge 的教训是『手写样本全是泾渭分明的，压根测不出边界在哪』。",
+  "_labeling_rule": "判定标准：去掉描述里多出来的部分，剩下的还是原文那件事吗？是 → reasonable_elaboration；多出来的部分本身就是一个独立知识点 → fabricated；没多出什么、只是换了措辞 → faithful。",
+  "_why_these_samples": "21 条『分歧淘汰』（两个模型看法相反）是灰区金矿，占了本文件的一半以上；另配两票都否与两票都过的样本做两端锚定。",
+  "_note_on_source_text": "每条只含课标条目的一个短片段（source_span，模型自己截的），非原文分发；语料全文按 data/source/README.md 的约定不入库。",
+  "cases": [
+    {
+      "source_span": "理解数位的含义",
+      "description": "理解个位、十位、百位、千位、万位的含义，知道每个数位上的数字表示该数位的计数单位有几个。",
+      "expected": "reasonable_elaboration",
+      "note": "灰区代表样本：列举原文所指的对象。flash 判合理展开、pro 判凭空增加。"
+    },
+    {
+      "source_span": "了解符号＜，＝，＞的含义",
+      "description": "理解符号＜，＝，＞的含义，并能正确使用这些符号表示两个数之间的大小关系。",
+      "expected": "reasonable_elaboration",
+      "note": "灰区：补上原文动词的自然延伸（了解含义 → 会用）。"
+    },
+    {
+      "source_span": "会比较万以内数的大小",
+      "description": "会比较万以内数的大小，掌握从高位到低位逐位比较的方法。",
+      "expected": "reasonable_elaboration",
+      "note": "灰区，且方向与上两条相反：flash 判额外增加、pro 判合理具体化 —— 二值框架下没有稳定答案的直接证据。"
+    },
+    {
+      "source_span": "感悟运算之间的关系",
+      "description": "感悟加法与减法、乘法与除法之间的互逆关系，以及乘法与加法、除法与减法之间的内在联系。",
+      "expected": "reasonable_elaboration",
+      "note": "灰区：点明原文所指的『关系』具体是哪些。"
+    },
+    {
+      "source_span": "探索加法和减法的算理与算法，会整数加减法。",
+      "description": "理解整数加法中相同数位对齐、从个位加起、满十进一的道理。",
+      "expected": "reasonable_elaboration",
+      "note": "两票都否，但『相同数位对齐、满十进一』正是原文所说的『算理』本身，不是另一个知识点。"
+    },
+    {
+      "source_span": "探索加法和减法的算理与算法，会整数加减法。",
+      "description": "掌握整数加减法竖式计算的标准步骤，能正确完成计算。",
+      "expected": "reasonable_elaboration",
+      "note": "边界：竖式是原文『算法』的具体形式，不是新知识点。"
+    },
+    {
+      "source_span": "形成初步的符号意识",
+      "description": "初步理解数学符号（如数字、运算符号、等号）可以用来表示数量关系和运算过程，能用符号表达简单情境中的数学信息。",
+      "expected": "reasonable_elaboration",
+      "note": "两票都否。课标的核心素养表述极抽象，不具体化就是不可教的节点 —— 忠实性与有用性冲突的典型。"
+    },
+    {
+      "source_span": "形成初步的数感",
+      "description": "在生活情境中发展对数量的直觉感知能力，包括理解数的实际大小、多少关系以及数的相对意义。",
+      "expected": "reasonable_elaboration",
+      "note": "同上。"
+    },
+    {
+      "source_span": "在具体情境中，认识万以上的数",
+      "description": "在具体情境中认识万以上的数，理解这些大数的实际意义。",
+      "expected": "reasonable_elaboration",
+      "note": "灰区，扩写幅度很小。"
+    },
+    {
+      "source_span": "在解决生活情境问题的过程中，体会数和运算的意义",
+      "description": "在解决生活情境问题的过程中，体会数和运算的实际意义，理解数字和运算不是抽象的符号，而是用来描述和解决现实问题的工具。",
+      "expected": "reasonable_elaboration",
+      "note": "灰区：措辞铺陈得多，但没换那件事。"
+    },
+    {
+      "source_span": "知道用算盘可以表示多位数",
+      "description": "知道算盘的结构（框、梁、档、上珠、下珠），能用算盘表示万以内的多位数。",
+      "expected": "fabricated",
+      "note": "真编造的锚点：算盘构造是一个独立知识点，去掉它剩下的才是原文。两票都否，判得对。"
+    },
+    {
+      "source_span": "在实际情境中感悟并理解万以内数的意义",
+      "description": "在实际情境中感悟并理解万以内数的意义，包括数的组成、大小比较和实际应用。",
+      "expected": "fabricated",
+      "note": "『大小比较』是另一条课标条目（1.1.2）的内容，不是这句话的具体化。"
+    },
+    {
+      "source_span": "解决简单的实际问题",
+      "description": "能运用计算器处理日常生活中的简单数学问题，如购物算账、数据统计等。",
+      "expected": "fabricated",
+      "note": "⚠️ 这是**假阳性**，但按 span 判就该是 fabricated。课标 2.2.2 原文是『能借助计算器进行计算，解决简单的实际问题』—— 计算器本来就在原文里，是 source_span 被模型截窄了。这条留在标尺里是刻意的：它测的是判定器在残缺上下文下的行为，同时钉住『source_span 截取过窄』这个独立缺陷。"
+    },
+    {
+      "source_span": "通过数的大小比较，感悟相等和不等关系",
+      "description": "通过比较数的大小，体会两个数之间要么相等（＝），要么不相等（＞或＜），初步感悟相等与不等是两种基本的关系。",
+      "expected": "reasonable_elaboration",
+      "note": "两票都过。"
+    },
+    {
+      "source_span": "在简单的生活情境中，运用数和数的运算解决问题，能解释结果的实际意义",
+      "description": "在简单的生活情境中，运用数和数的运算来解决问题，并能解释结果的实际意义。",
+      "expected": "faithful",
+      "note": "faithful 的锚点：几乎逐字，只是措辞微调。"
+    },
+    {
+      "source_span": "探索并掌握多位数的乘除法",
+      "description": "探索并掌握多位数的乘法和除法计算方法，包括算理和算法。",
+      "expected": "faithful",
+      "note": "faithful 锚点：把『乘除法』拆成『乘法和除法』属同义改写。"
+    },
+    {
+      "source_span": "了解十进制计数法",
+      "description": "了解十进制计数法的基本规则：每相邻两个计数单位之间的进率都是十。",
+      "expected": "reasonable_elaboration",
+      "note": "两票都过。点明原文术语的定义内容。"
+    },
+    {
+      "source_span": "在解决简单实际问题的过程中，理解四则运算的意义",
+      "description": "在解决简单实际问题的过程中，理解加法、减法、乘法和除法各自表示的实际含义。",
+      "expected": "reasonable_elaboration",
+      "note": "两票都过。展开『四则』所指。"
+    },
+    {
+      "source_span": "了解奇数、偶数、质数（或素数）和合数",
+      "description": "能判断一个自然数是奇数还是偶数。",
+      "expected": "fabricated",
+      "note": "**内容缺失也是不忠实**：只覆盖了原文的一半（漏掉质数合数），与原文说的不是同一件事。这条防判定器把『三档』理解成『只看有没有多写』。"
+    },
+    {
+      "source_span": "会比较万以内数的大小",
+      "description": "掌握两位数乘两位数的竖式计算方法。",
+      "expected": "fabricated",
+      "note": "对抗样本：完全换了一件事，任何判定器都必须判 fabricated。若这条也过不了，说明判定器已经失灵，不是标准松紧问题。"
+    }
+  ]
+}
