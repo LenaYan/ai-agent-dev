@@ -321,7 +321,7 @@ assessmentPrompt 之间，不在 name 与 description 之间，因此刻意没�
      `AttributeError: 'dict' object has no attribute ...`，看起来像业务
      bug）。真正的坑是"serde 严格"与"自动推导"是**两个独立开关**，而
      `严格 + 未设环境变量` 这一格比什么都不做更糟——已实测踩中并修复。
-8. ⏳ MCP server，把图暴露给 agent —— **代码与评测已完成，验收未做**：
+8. ✅ ~~MCP server，把图暴露给 agent~~（2026-07-27，含真实对话验收）：
    `serve/query.py`（六个工具的纯函数领域层，不 import 任何 mcp 符号）+
    `serve/mcp_server.py`（FastMCP 1.28.1 绑定，函数体只转发）+
    `scripts/eval_diagnosis.py`（22 条 ground truth，recall@3 = 84%）。
@@ -329,13 +329,28 @@ assessmentPrompt 之间，不在 name 与 description 之间，因此刻意没�
    首跑 63% 掉的不是语义理解而是两个实现缺陷（长度惩罚 / 符号与口语的表示层差异）、
    IDF 加权实测更差、以及"选 @3 不选 @1"的理由在当前实现下不成立
    （@1/@3/@5 三个数完全相同，排序维度是空的）。
-   **剩下的是真验收**：接进 Claude Code 跑两段真实对话，看
-   `misconceptions`/`evidence` 到底有没有进入 agent 的回答。
+   **验收已跑**（两段真实对话，逐字段核对见 `docs/mcp-server-design.md` §8）：
+   `misconceptions` 兑现了承诺 —— 诊断线上靠「0.3 比 0.03 小」这条**同型不同数**的
+   误概念定位到心智模型，那正是当初决定不放 LLM 时最担心的能力，结果由字段本身补上了
+   （误概念是有限且可枚举的，不需要语义模型也能对上）。`evidence` / `assessment_prompt` /
+   `dependencies.reason` 均原样进入回答，`provenance` 让 agent 自动降级措辞。
+   **`revisits` 完全没用上**（全图 0 条，字段至今未经检验）；`standards` 只报编号，
+   对家长无意义 —— 那个字段的消费者是教研/教师，不是家长。
+   **规划线不可用**：分数四则的前置只有一条，通分整条链没连出来，agent 只能用自身知识
+   补三步并标注来源。是数据问题不是工具问题 —— 而 `get_graph_stats` 先报 26/64 孤立，
+   让 agent 一开始就知道该打几折，那个"防止在退化的图上假装做规划"的设计意图起了作用。
 9. ✅ ~~路线图"阶段四·主流框架"：LangGraph 编排对比~~ —— 同一份六层纯函数
    流水线接出手写版 / LangGraph 版 / LangGraph `Send` 扇出版三种编排实现，
    受控实验量出断点续跑的真实收益与代价，见 `docs/langgraph-vs-handwritten.md`
    （核心结论：省的是崩溃点上游的调用量，但代价是 1.65×~2.3× 代码量、
    Node 级重试对多数真实故障不可达、msgpack 严格模式的开关陷阱、异步传染）
+10. **边质量 —— 现在的主要瓶颈，规划线就卡在这里**：31 条边、26/64 孤立、
+   最长前置链 3 层，跨学段前置（整数→小数→分数→比和比例）没连出来，
+   `分数的意义` 至今是孤儿。涉及 edges 层剪枝策略，是独立课题。
+11. 补一个"谁以它为前置"的工具（`get_next_topics`）——"他会了 X，接下来学什么"
+   是家长的自然问题，现有六个工具答不了；领域层已有 `dependents_of`，只是没暴露。
+   **这条是真跑对话才发现的，设计评审发现不了。** 排在第 10 条之后：
+   同一张稀图上，新工具照样大面积返回空。
 
 > 法律定性（课标著作权，`docs/feasibility-analysis.md`）只卡"大规模生成 + 对外发布"；
 > 本地自用的流水线跑通不受影响。
