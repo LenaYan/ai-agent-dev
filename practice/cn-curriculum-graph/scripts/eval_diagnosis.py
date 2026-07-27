@@ -38,6 +38,7 @@ from cn_curriculum_graph.serve.query import (  # noqa: E402
     match_misconceptions,
 )
 from cn_curriculum_graph.serve.scoring import LiteralScorer, VectorScorer  # noqa: E402
+from cn_curriculum_graph.serve.embedding import DEFAULT_MODEL  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 GROUNDTRUTH = ROOT / "data" / "diagnosis-eval-groundtruth.json"
@@ -114,6 +115,11 @@ def sweep_thresholds(index, cases, scorer, thresholds, *, limit: int = 5) -> lis
 
     复用同一个 scorer 实例是**必须的**：向量打分器的缓存让整轮扫描只编码
     一次语料。每个阈值新建一个 scorer 会把扫描变成 N 倍的模型调用。
+
+    注意：`LiteralScorer.min_relevance` 是类属性，`original = scorer.min_relevance`
+    读到的是类属性；扫完在 `finally` 里写回时会在这个实例上留下一个同名的
+    **实例属性**（遮蔽类属性，值相同，功能无害）。以后若有代码假设
+    "读类属性就等于读某个 scorer 实例的默认阈值"，这里会不成立。
     """
     points = []
     original = scorer.min_relevance
@@ -144,6 +150,19 @@ def same_operating_point(frontier, *, empty_accuracy: float = 1.0) -> FrontierPo
     return max(qualified, key=lambda p: p.recall_at_3) if qualified else None
 
 
+def threshold_range(start: float, stop: float, step: float) -> list[float]:
+    """生成 `[start, stop]` 闭区间内、步长 `step` 的阈值列表（含两端）。
+
+    点数按 `round((stop - start) / step)` 计算，而不是 `int(...)`：
+    浮点误差会让 `int()` 把本该是整数的点数悄悄截掉一个 —— 默认参数
+    `0.05 / 0.95 / 0.05` 下 `(0.95-0.05)/0.05` 在浮点里是
+    `17.999999999999996`，`int()` 截成 17，用户显式要求的终点 0.95
+    就被静默丢了。`round()` 对这种"差一点点到整数"的浮点误差是安全的。
+    """
+    steps = round((stop - start) / step)
+    return [round(start + i * step, 4) for i in range(steps + 1)]
+
+
 def verdict(results: list[CaseResult]) -> int:
     """只有 recall@3 掉线才红。
 
@@ -161,7 +180,7 @@ def main() -> int:
     parser.add_argument("--groundtruth", type=Path, default=GROUNDTRUTH)
     parser.add_argument("--limit", type=int, default=5, help="每条观察句取回多少候选")
     parser.add_argument("--scorer", choices=("literal", "vector"), default="literal")
-    parser.add_argument("--model", default=None, help="向量打分器用哪个模型（默认 BAAI/bge-m3）")
+    parser.add_argument("--model", default=None, help=f"向量打分器用哪个模型（默认 {DEFAULT_MODEL}）")
     parser.add_argument("--threshold-sweep", action="store_true", help="扫描阈值并打印前沿曲线")
     parser.add_argument("--sweep-from", type=float, default=0.05, help="扫描起点")
     parser.add_argument("--sweep-to", type=float, default=0.95, help="扫描终点")
@@ -182,10 +201,7 @@ def main() -> int:
     cases = load_cases(args.groundtruth)
 
     if args.threshold_sweep:
-        thresholds = [
-            round(args.sweep_from + i * args.sweep_step, 4)
-            for i in range(int((args.sweep_to - args.sweep_from) / args.sweep_step) + 1)
-        ]
+        thresholds = threshold_range(args.sweep_from, args.sweep_to, args.sweep_step)
         frontier = sweep_thresholds(index, cases, scorer, thresholds, limit=args.limit)
         print(f"{'阈值':<8}{'recall@3':<12}空样本正确率")
         print("-" * 40)
@@ -199,7 +215,25 @@ def main() -> int:
             print("    它拿不到与字面基线同台的资格，不能只报它召回高的那个点。")
             return 1
         print(f"  阈值 {best.threshold} → recall@3 = {best.recall_at_3:.0%}")
-        print("  （字面基线在同一工作点上是 84%）")
+
+        if args.scorer == "vector":
+            # 字面基线现算，不许写死：硬编码的数字会在阈值扫描改动、
+            # groundtruth 增删样本后悄悄过期，且早就被本脚本自己的
+            # --threshold-sweep 实测推翻过一次（见 CHANGELOG/commit）。
+            # 这一趟只用 LiteralScorer，不碰任何可选依赖，几秒内跑完。
+            baseline_index = GraphIndex(index.graph, scorer=LiteralScorer())
+            baseline_frontier = sweep_thresholds(
+                baseline_index, cases, baseline_index.scorer, thresholds, limit=args.limit
+            )
+            baseline_best = same_operating_point(baseline_frontier)
+            if baseline_best is None:
+                print("  （字面基线在扫描范围内未达到该工作点，无法对比）")
+            else:
+                print(
+                    f"  （字面基线在同一工作点上：阈值 {baseline_best.threshold} "
+                    f"→ recall@3 = {baseline_best.recall_at_3:.0%}）"
+                )
+
         print(f"\n代价：建索引 {warm_seconds:.1f}s，编码 {getattr(scorer, 'encode_calls', 0)} 条文本")
         return 0
 

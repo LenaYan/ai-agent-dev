@@ -226,3 +226,23 @@ def test_same_operating_point_returns_none_when_nothing_reaches_it():
     frontier = [FrontierPoint(threshold=0.1, recall_at_3=0.95, empty_accuracy=0.66)]
 
     assert same_operating_point(frontier) is None
+
+
+def test_threshold_range_includes_both_endpoints_with_default_sweep_params():
+    """默认扫描参数 0.05/0.95/0.05 下，浮点误差曾让 int() 把终点 0.95
+    悄悄截掉（(0.95-0.05)/0.05 在浮点里是 17.999999999999996）。"""
+    from eval_diagnosis import threshold_range
+
+    thresholds = threshold_range(0.05, 0.95, 0.05)
+
+    assert thresholds[0] == 0.05
+    assert thresholds[-1] == 0.95
+    assert len(thresholds) == 19
+
+
+def test_threshold_range_handles_floating_point_edge_cases():
+    """另一组会踩同一个浮点坑的组合：(0.3-0.1)/0.05 在浮点里是
+    3.9999999999999996，int() 会截成 4，丢掉终点 0.3。"""
+    from eval_diagnosis import threshold_range
+
+    assert threshold_range(0.1, 0.3, 0.05) == [0.1, 0.15, 0.2, 0.25, 0.3]
