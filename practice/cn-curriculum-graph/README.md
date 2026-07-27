@@ -6,9 +6,10 @@
 让 LLM 能在其上做定位与调度 —— 对标 [Marble Skill Taxonomy](https://github.com/withmarbleapp/os-taxonomy)，
 但换成中国课标，并修掉原版几个已确认的缺陷。
 
-**当前进度：地基 + 生成流水线已跑通。** schema 定义、CI 校验层、六层生成流水线
-（切分 → 抽取 → 去重 → 连边 → 交叉审核 → 组装）均已完成，159 个测试，
-并已接真模型端到端跑通一次。产出的图数据**不入库**（见下方「许可与来源」）。
+**当前进度：地基 + 生成流水线 + MCP 暴露层已跑通。** schema 定义、CI 校验层、
+六层生成流水线（切分 → 抽取 → 去重 → 连边 → 交叉审核 → 组装）、
+把图暴露给 agent 的 MCP server 均已完成，363 个测试，
+并已接真模型端到端跑通（64 节点 / 31 边）。产出的图数据**不入库**（见下方「许可与来源」）。
 
 > ⚠️ 这个项目的**真正资产是流水线，不是数据集**。
 > 数据集的可信度取决于教研专业审核（见 `docs/feasibility-analysis.md` 第二节），
@@ -19,11 +20,24 @@
 
 ```bash
 uv sync
-uv run pytest                        # 159 个测试
+uv run pytest                        # 363 个测试
 uv run ccg-validate data/example-graph.json  # 校验一份图数据（默认跳过语义一致性，留 CONSISTENCY_SKIPPED 警告）
 
 uv run python scripts/export_schema.py   # 重新导出 JSON Schema
 ```
+
+**MCP server**：把图暴露给 agent（**不需要任何 key** —— 领域层是纯检索 + 纯图算法）。
+
+```bash
+uv run ccg-mcp                       # stdio server，默认读 data/generated/graph.json
+CCG_GRAPH_PATH=/path/to/graph.json uv run ccg-mcp    # 换一份图
+
+# 检索够不够用，由 ground truth 说了算（22 条样本，零 key、零成本）：
+uv run python scripts/eval_diagnosis.py     # recall@1/@3/@5，低于 75% 非零退出
+```
+
+接进 Claude Code：工作区根目录已带 `.mcp.json`，**重启 Claude Code** 后
+`/mcp` 里应能看到 `cn-curriculum-graph` 与它的六个工具。
 
 接真 LLM judge，激活 `NAME_DESC_MISMATCH`。两个 provider 可选，各认自己的 key：
 
@@ -307,7 +321,16 @@ assessmentPrompt 之间，不在 name 与 description 之间，因此刻意没�
      `AttributeError: 'dict' object has no attribute ...`，看起来像业务
      bug）。真正的坑是"serde 严格"与"自动推导"是**两个独立开关**，而
      `严格 + 未设环境变量` 这一格比什么都不做更糟——已实测踩中并修复。
-8. MCP server，把图暴露给 agent
+8. ⏳ MCP server，把图暴露给 agent —— **代码与评测已完成，验收未做**：
+   `serve/query.py`（六个工具的纯函数领域层，不 import 任何 mcp 符号）+
+   `serve/mcp_server.py`（FastMCP 1.28.1 绑定，函数体只转发）+
+   `scripts/eval_diagnosis.py`（22 条 ground truth，recall@3 = 84%）。
+   实测发现见 `docs/mcp-server-design.md` §7，三条与设计预期不同：
+   首跑 63% 掉的不是语义理解而是两个实现缺陷（长度惩罚 / 符号与口语的表示层差异）、
+   IDF 加权实测更差、以及"选 @3 不选 @1"的理由在当前实现下不成立
+   （@1/@3/@5 三个数完全相同，排序维度是空的）。
+   **剩下的是真验收**：接进 Claude Code 跑两段真实对话，看
+   `misconceptions`/`evidence` 到底有没有进入 agent 的回答。
 9. ✅ ~~路线图"阶段四·主流框架"：LangGraph 编排对比~~ —— 同一份六层纯函数
    流水线接出手写版 / LangGraph 版 / LangGraph `Send` 扇出版三种编排实现，
    受控实验量出断点续跑的真实收益与代价，见 `docs/langgraph-vs-handwritten.md`

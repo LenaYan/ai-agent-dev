@@ -126,3 +126,15 @@ def test_tool_results_are_json_serializable():
     body = _call("get_prerequisites", {"topic_id": "frac_add", "depth": 2})
 
     assert json.loads(json.dumps(body))["result"][0]["reason"]
+
+
+def test_default_graph_path_does_not_depend_on_the_working_directory():
+    """server 的 cwd 由 MCP 客户端决定，不由我们决定。
+
+    默认路径若是相对 cwd 的，"在我机器上能跑"会变成"在 Claude Code 里起不来"，
+    而且报错是一句 FileNotFoundError，看不出是 cwd 的问题。
+    """
+    from cn_curriculum_graph.serve.mcp_server import DEFAULT_GRAPH_PATH
+
+    assert DEFAULT_GRAPH_PATH.is_absolute()
+    assert DEFAULT_GRAPH_PATH.exists()

@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "cn-curriculum-graph": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "practice/cn-curriculum-graph",
+        "ccg-mcp"
+      ],
+      "env": {}
+    }
+  }
+}

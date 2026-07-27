@@ -29,7 +29,13 @@ TOOL_NAMES = (
 )
 
 GRAPH_PATH_ENV = "CCG_GRAPH_PATH"
-DEFAULT_GRAPH_PATH = Path("data/generated/graph.json")
+
+# 相对包位置解析，不相对 cwd —— **server 的 cwd 由 MCP 客户端决定**。
+# 写成相对路径的话，"在我机器上能跑"会变成"在 Claude Code 里起不来"，
+# 而症状只是一句 FileNotFoundError，看不出问题出在 cwd。
+DEFAULT_GRAPH_PATH = (
+    Path(__file__).resolve().parents[3] / "data" / "generated" / "graph.json"
+)
 
 INSTRUCTIONS = """中国小学数学课标知识依赖图（数与代数领域）。
 
