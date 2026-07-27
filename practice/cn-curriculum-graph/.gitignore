@@ -2,3 +2,10 @@
 # 生成产物：本项目的资产是流水线不是数据集；且内容派生自课标文本，
 # 仓库公开，不做对外分发（见 docs/feasibility-analysis.md 闸门 1）
 data/generated/
+
+# 课标原文语料：内容为教育部课标原文，仓库公开，不做对外分发
+# （见 docs/feasibility-analysis.md 闸门 1 —— 此前 data/source/example.md
+#  被跟踪，等于把真实课标条目提交进了公开仓库，是这条闸门的一个漏洞）。
+# 只保留说明文件，语料由使用者本地准备。
+data/source/*
+!data/source/README.md
