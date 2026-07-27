@@ -53,6 +53,15 @@
 - 产出：sessions/2026-07-24-marble-upstream-analysis.md（原始会话在非 git 目录 ~/Claude/child_watch_baobao，故迁入本仓库）
 - 下一步：同上条——生成流水线；另可选：把 os-taxonomy + 社区 taxonomy-mcp 纳入实验素材，若要做调度实验则需自写 learner model（缺的正是这层）。
 
+## 2026-07-27 — LangGraph 重写编排层 + 手写 vs 框架受控实验（路线图阶段四验收）
+- **为什么现在做**：手写版已跑通**且带着真实失败模式**（judge 抛 429 炸全批、中断只能从头烧钱）。空着手写状态机学到的只有 API；带着具体痛点写，才知道 checkpointer 到底解决了什么、代价是什么。
+- **做法**：六层纯函数一行不改，A 阶段 `graph.py`（一层一个 Node）与手写版并存且行为对等，B 阶段 `graph_fanout.py` 用 `Send` 扇出到条目级。故障注入靠包裹已有的 `PipelineDeps`（当初为可测性做的 DI 原封不动变成了实验装置）。239 测试。
+- **核心结论（全部实测，多数对框架不利）**：①**Node 级 `RetryPolicy` 对「LLM 偶发失败」不可达** —— 六层纯函数已把非程序错误吞成 `DropRecord` 从不上抛；能触发时**粒度是整层**（实测 4 chunk 故障在层末尾 → 该层调用 8 次），**手写版的逐条 try/except 在这个粒度上严格更优**。②**`NODE_TIMEOUT` 原本永远打不响**：`async def` 但函数体不 `await`，同步阻塞占住事件循环，看门狗拿不到调度；改 `await asyncio.to_thread` 后生效，但**只改变返回结果、不提供墙钟上界**（`asyncio.run` 收尾 join 杀不掉的线程，`THREAD_JOIN_TIMEOUT=300`）。③**checkpoint 收益 = 崩溃点上游的全部调用量**，随规模放大（n=3/10/20 净优势 3/14/44）；但整层确定性失败时 `RetryPolicy` 是**纯亏损**（重烧 3 遍），故障注在层中间而非层入口时净优势降到 1/6/26 —— 小规模下两者几乎抵消。④**编排代码量 1.65×（机制）/ 2.3×（含重入）**。⑤唯一低估框架处：`Send` 扇出真并发带来 **8× 墙钟加速**（8.08s→1.05s），fake extractor 瞬时返回把它抹平了；反面是并发无上界 → 真实场景 429 风暴 → 被逐条 try/except 安静吞掉。
+- **框架强加了什么**（比"省了什么"更值得记）：checkpoint 重入逼你把持久化做成幂等，**还逼你把整个 state reducer 做成幂等**；msgpack 自定义类型未注册（未来版本强制）；异步传染（为让 timeout 生效四个 Node 必须 async，`SqliteSaver` 换 `AsyncSqliteSaver`，`asyncio.run` 使它不能从任何已有事件循环调用）；`retry_on` 默认会重试 `ValueError`，而项目刻意的"配置错误当场炸"哨兵全用 `ValueError`。
+- **最贵的一条教训（关于我们自己）**：一份声称"两个实现行为对等"的笔记，其 14 条对等性测试 + 4 条逐字节比对**全部跑在 `checkpoint_db=None` 下** —— **我们的对等性测试恰好绕开了框架唯一有价值的模式**。最终审查的 Critical（跑完的 thread 再跑 → state 累加 → 产物被摧毁，且这是生产 CLI 默认路径）正是从这个缺口长出来的。
+- 产出：`pipeline/graph.py`、`graph_fanout.py`、`faults.py`、`scripts/compare_orchestration.py`、`docs/langgraph-vs-handwritten.md`（三章：对等对比 / 额外解锁 / 什么时候不该用它）。
+- 下一步：接真模型上量前必须重评 `ValueError` 不重试的误伤面、并发上限按实际配额校准、注册 `allowed_msgpack_modules`。
+
 ## 2026-07-26 — 生成流水线（六层纯 DAG 工作流）+ 多 agent 驱动开发实践
 - **产品/工程收获**：①**六层里三层不需要模型**（切分、组装是纯规则，去重是规则配对+LLM 确认），这个比例本身是设计质量信号，对应 effective-agents 心法①"不要什么都做成 Agent"。②**剪枝规则由校验规则反推**：`GRADE_INVERSION` 会拒绝"前置年级晚于后继"，那就不生成这类候选——省调用是次要的（N²→N），主要价值是**生成端不产出校验端注定要拒的东西**，同一套约束写两遍是 bug 温床。③**模型只产出它有资格产出的字段**：`id`/`provenance`/`standard_codes` 由代码填，`provenance.confidence` **恒为 0.0**——没有教研审核时任何非零置信度都是自欺，这正是 Marble 最大的信任缺口。把这条做成**结构约束**（`DraftContent` 类就是给模型的 input_schema，装不下那些字段）而非约定。④**课标编号必须在切分层绑定**：`LOW_STANDARDS_COVERAGE` 是带硬阈值的 ERROR，抽不到编号足以让整批产出被自己的 CI 拒掉；编号在原文里有格式，属纯规则能干的活，交给模型平白引入不确定性。
 - **最重要的一条教训 —— 原则会在接缝处被稀释**：六层各自都老实记了 `DropRecord`，`review.py` 甚至为丢边写了完整的 `UNKNOWN_REVIEW_TARGET` 记账，但**编排层一行 dict comprehension 的预过滤让那段代码永不执行**，真正丢边处一声不吭。逐层审查看不见它，因为它不在任何一层里。修法之外更重要的是：**把原则写成跨层守恒断言**（最终产出 + 全部 DropRecord ≡ 全部输入），让"没有静默跳过"从口号变成会失败的测试。
