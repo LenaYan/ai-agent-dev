@@ -17,8 +17,37 @@
 ## 第一章：对等对比（A 阶段：手写版 vs LangGraph 版）
 
 A 阶段是同一份六层纯函数流水线的两种编排实现，测试对实现无感知
-（`tests/pipeline/test_run.py` 的 13 条端到端用例两边参数化跑，全绿），
-这是"对等"这个说法的定义。
+（`tests/pipeline/test_run.py` 的 14 条端到端用例两边参数化跑，全绿——
+用 `grep -c '^@ENGINES' tests/pipeline/test_run.py` 核实过，不是此前
+写的 13 条）。**但"全绿"要先收窄一句才配得上"对等"这个定义**：这 14
+条用例（连同其中 4 条逐文件逐字节比对两引擎产物的用例：
+`test_two_engines_produce_identical_artifacts_on_normal_run` 等）全部
+经由 `test_run.py:31` 的 `_run()` 调用 `run_pipeline_lg`，而 `_run()`
+**没有传 `checkpoint_db`**（文件里全部 `run_pipeline_lg(...)` 调用点也
+都没有）——严格意义上，"对等性测试全绿"这个结论**只对
+`checkpoint_db=None`（不启用 checkpointer）这一种模式成立**。这不是
+无关紧要的细节：全分支审查发现的 Critical 1（跑完的 checkpoint thread
+再跑会 state 累加，见下文"框架强加了什么"第 3 条）**恰好只在
+`checkpoint_db` 非空、且同一 thread 第二次被调用时触发**——修复前
+233 个测试全绿，正是因为没有一条覆盖"跑完 → 再跑"这个具体状态转换，
+而这正是生产 CLI 的默认路径（`derive_thread_id` 按 `source|out` 稳定
+派生 thread_id，同一实验重跑会撞上同一个 thread_id）。**这本身就是一条
+教训，比任何具体数字都值得记住：我们的对等性测试恰好绕开了框架唯一
+有价值的模式（checkpoint 断点续跑）**——"两边跑全绿"验证的是"两套编排
+在无持久化状态时行为一致"，不是"两套编排在框架真正发挥断点续跑价值的
+路径上行为一致"。
+
+尽管如此，有一条更硬的旁证部分弥补了这个盲区：审查者做过一次**没有
+固化为测试、跑完即弃的探针**（代码库里搜不到这组数字，读者需要自行
+复现才能验证）——n=6，`hard_crash`/`partial_crash` 两个真正会触发
+checkpoint resume 的故障场景，三个引擎（handwritten/langgraph/fanout）
+各自崩溃后 resume，逐个比对 8 个落盘文件的字节内容，`DIFFS=0`；无故障
+的 baseline（n=10）同样 0 差异，**且 `fanout` 与另两个引擎的产物也
+逐字节一致**。这组数字没有对应的 pytest 用例，不应被当成 CI 会一直
+守住的结论，但它是这份笔记里对"A 阶段最终产物对等"最直接的一次验证——
+比第一章现有的任何论据都更硬地支撑这个结论，只是没有被固化、无法重复
+核实，这条局限务必和上一段的"对等只在 checkpoint_db=None 下成立"放在
+一起读。
 
 ### 数据表：三个规模的受控实验
 
@@ -58,8 +87,27 @@ A 阶段是同一份六层纯函数流水线的两种编排实现，测试对实
 ### 框架省了什么
 
 **checkpoint 断点续跑**：收益 = 崩溃点上游全部调用量，公式
-`gap = N_chunks + P`（`P` 是 dedupe 候选对数，因为 `dedupe.candidate_pairs`
-是 O(N²) 扫描，`P` 随 chunk 数**超线性**增长，`gap` 也就跟着超线性放大）：
+`gap = N_chunks + P`（`P` 是 dedupe 候选对数）。重新核实过：`gap = N + P`
+与下表 `hard_crash` 净优势逐位相等（n=3/10/20 分别是 3/14/44，反推
+`P` = 0/4/24）。`P` 精确等于 `_TOPIC_POOL` 固定的 6 个名字循环取值
+产生的同名对数之和 `P = Σ_{k=1}^{6} C(n_k, 2)`（`n_k` 是第 k 个名字
+在这 N 个 chunk 里被取到的次数，`n_k ≈ N/6`）；N 是 6 的倍数时化简为
+`6·C(N/6,2) = N(N-6)/12`。**`N²/12` 这个系数完全来自"词表固定为 6 个"
+这个 fixture 特性，不是 `candidate_pairs` 算法本身的复杂度结论**——
+真实课标的知识点词表会随语料规模增长（内容越多、独立概念越多），不会
+像这里一样卡死在 6 个名字反复复用，`P` 在真实数据上是否也超线性增长
+要另测，本文这条曲线只在"词表固定"这个简化假设下成立。
+
+因果链也要写准：`candidate_pairs` 本身的 O(N²) 扫描**不烧 LLM
+调用**——它是纯 Python 字符串比较（`normalize_name` 相等、
+`_containment_ratio` 相似度 ≥ 0.85、或 `standard_codes` 有交集，三选
+一即进候选，`src/cn_curriculum_graph/pipeline/dedupe.py:51` 起）。真正
+烧调用的是扫描后进入候选池、被 `dedupe()` 逐对送进 `judge()` 的那些对
+（`dedupe.py:250` 起的循环，每个候选对精确对应一次 LLM 调用）。本实验
+里这些候选对**几乎全部来自同名精确匹配，不是相似度阈值**——
+`_TOPIC_POOL` 的 6 个名字彼此已用 `_containment_ratio` 逐对验证过都
+< 0.85 合并阈值（脚本注释明确写了这点），不会靠"相似"进候选，靠的是
+循环取值产生的精确重名。
 
 | n（chunks） | hard_crash 净优势（`总调用hw - 总调用lg`） | partial_crash 净优势 |
 |---|---|---|
@@ -107,13 +155,40 @@ provide_a_wall_clock_bound`）：`NodeTimeoutError` 如期在约 1.000s 抛出
 上限本身，只实测验证了"阻塞时长贴近真实调用耗时、明显超过 NODE_TIMEOUT"
 这个方向。
 
-**3. checkpoint 重入逼你把持久化做成幂等的**——手写版从不需要付这个成本。
-`run_pipeline_lg` 的 S1 修复（`_ensure_consistent_resume`）就是这个代价
-的直接体现：resume 前必须校验 `source_dir`/`out_dir`/`model_id`/
-`curriculum` 四个字段与 checkpoint 里存的是否一致，不一致就拒绝静默复用
-旧参数（`src/cn_curriculum_graph/pipeline/graph.py:558` 起）。这段代码
-（连同 `run_pipeline_lg` 本身）在手写版里完全不存在，因为手写版没有"续跑"
-这个概念，也就没有"续跑时参数对不上怎么办"这个问题需要解决。
+**3. checkpoint 重入逼你把持久化做成幂等的——而且不只是"校验参数"这一层，
+它更深一层逼你把整个 state reducer 做成幂等的。** 手写版从不需要付这个
+成本。`_ensure_consistent_resume` 只解决了"续跑时参数对不对得上"这一层
+（resume 前校验 `source_dir`/`out_dir`/`model_id`/`curriculum` 四个字段
+与 checkpoint 里存的是否一致，不一致就拒绝静默复用旧参数，
+`src/cn_curriculum_graph/pipeline/graph.py:588` 起——行号因 Critical 1
+的修复后移，此前笔记写的 558 是修复前的位置）——但全分支审查发现
+的 Critical 1（commit `7c4ddd2`）证明了光这层校验不够：真正的坑在于
+`drafts`/`drops`（fanout 版还有 `draft_review_kept`/`draft_review_
+outcomes`）全部是 `Annotated[..., operator.add]` 的 reducer 字段，
+LangGraph 在**同一 thread 上开新 run 不会重置 channel**——thread 已经
+跑完（`existing.next == ()` 且 `existing.values` 非空）之后，同一
+thread_id 再调用一次 `ainvoke(payload)`，第二次的 delta 会**累加**在
+第一次已完成的值上：dedupe 看到两倍同名草稿、互相当成重名抵消，产出一份
+topics 归零的 graph.json，覆盖掉上一次跑出的好图。也就是说，光校验"这次
+调用的参数和上次一致"还不够——**上次的 state 本身也得被安全地处理掉**，
+否则"参数一致、可以复用"这个正确判断反而会加速状态污染（确认可以复用
+之后就真的把两轮数据叠到了一起）。
+
+我们最终没有选"把 reducer 真正改成幂等"（例如把 `drafts`/`drops` 从
+`operator.add` 换成按 `draft_id`/`ref` 去重的自定义 reducer，让重复
+delta 天然被吸收掉）——那是更彻底但改动面更大的路线，牵涉 fanout 版
+更多字段，且需要重新证明"去重 reducer 在正常追加场景下不会误删合法的
+重复项"。实际选的是更直接的一条：`existing.values` 非空时，校验参数
+一致后**显式 `saver.adelete_thread(thread_id)` 清空整个 thread 再重新
+`ainvoke`**——channel 回到"从未跑过"的状态，reducer 不会看到旧值，不
+需要证明任何去重逻辑的正确性。代价是这条路径**放弃了 checkpoint 本该
+提供的"这次调用是不是从上次断点继续"的增量语义**：thread 跑完后再跑
+一次，等价于把上一次的全部 checkpoint 记录连根拔起、从零开始，不是
+真正意义上的"幂等重放"——如果调用方指望"用同一 thread_id 重跑只补齐
+缺的部分"，这条修复会让它退化成"整个重跑一遍"，只保证了不会产生错误
+结果，没有额外节省调用量。这段代码（连同 `run_pipeline_lg` 本身）在
+手写版里完全不存在，因为手写版没有"续跑"这个概念，也就没有"续跑时参数
+对不上怎么办"以及"跑完之后再跑怎么办"这两个问题需要解决。
 
 **4. `retry_on` 会重试 `ValueError`，而项目刻意的"配置错误当场炸"哨兵
 全用 `ValueError`。** 修复前实测：空 `judges` 时 LangGraph 把同一个
@@ -157,6 +232,16 @@ Node 函数体 + `build_graph`，不含断点续跑相关代码）**139** 行—
 已经偏移；用当前文件的实际函数边界重新数出的合计数字与 Task 6 报告的
 139/84 完全一致，说明代码本身的规模没有变化，只是行号漂移了。）
 
+**这次全分支审查后的补充核实**：Critical 1（commit `7c4ddd2`）给
+`run_pipeline_lg` 加了一个新分支（`existing.values` 非空时的
+一致性校验 + `adelete_thread`），`graph.py` 净增约 30 行，但这 30 行
+里绝大多数是解释修复动机的注释块，按同一把尺子（非注释正文行）粗算，
+真正落进"断点续跑相关代码"这一类目的新增行数只有个位数——`139`
+（编排机制，未涉及 `run_pipeline_lg`）不受影响，`192` 这个总数、
+`2.3×` 这个比值在四舍五入的精度上也没有变化。这里没有重新做一次
+Task 6/8 那样逐行精确核对，只是抽样确认了"改动完全落在断点续跑分支
+内、比值量级未变"这个结论，如果要精确到个位数应重新逐行数一遍。
+
 ### 一条正面素材
 
 LangGraph 只把最终成功那次调用的返回值当作该 step 的 delta，失败的
@@ -169,7 +254,7 @@ delta），本项目没有专门写测试去实测验证这个机制本身，不
 
 > **声明：B 阶段已不是"同一需求的两种实现"——架构变了。** 它回答的是
 > 另一个问题："框架让我做成了原本不会去写的事吗，收益多大？"
-> `graph_fanout.py` 没有接入 `test_run.py` 那 13 条两引擎对等的参数化
+> `graph_fanout.py` 没有接入 `test_run.py` 那 14 条两引擎对等的参数化
 > 端到端测试，这个数据不能跟第一章的表格混着读。
 
 ### 先说一个诚实的、反直觉的发现：这次实验没有测出 B 阶段的优势
@@ -228,7 +313,43 @@ B 阶段的条目级 checkpoint 只需要在 resume 时补 1 次调用（净成�
 checkpoint_only_reruns_the_failed_chunk` 用另一份更小的 2-chunk fixture
 （`3.1.1`/`3.1.2`）独立验证了同一件事——resume 后从未失败过的 `3.1.1`
 调用次数为 0，失败过的 `3.1.2` 被重新调用 1 次，这条测试目前在全量
-233 个用例里持续通过，不是一次性观察。
+239 个用例里持续通过，不是一次性观察。
+
+### 真并发：这次实验唯一低估框架的地方
+
+前面两节量的都是"checkpoint resume 净成本"，但 B 阶段还有一个完全
+不同维度的收益：`Send` 扇出让 `extract_one`/`review_one` 这两层从
+"整批一次调用、内部顺序处理"变成"逐条目真并发调用"，这件事在本文
+用到的 fake 实验装置里被系统性地抹平了——`_fake_deps()` 的 extractor
+是瞬时返回的纯函数，不管并发度是 1 还是 100，墙钟耗时都趋近于 0，
+两者的差异在 `compare_orchestration.py` 的耗时列上完全不可见。
+
+以下是**一次性探针实测，未固化为测试**（代码库里搜不到这组数字，只
+在 `graph_fanout.py` 的 `DEFAULT_MAX_CONCURRENT_LLM_CALLS` docstring
+里被引用过，读者需要自行复现才能验证）：8 个 chunk，extractor 换成
+`sleep(1s)` 的假实现——
+
+```
+langgraph（A 阶段，Node 粒度，无扇出）  N=8 → 墙钟 8.08s，extractor 并发峰值 = 1
+fanout（B 阶段，条目级扇出）           N=8 → 墙钟 1.05s，extractor 并发峰值 = 8
+```
+
+约 **8×** 墙钟加速，加速比与并发度基本对齐（8 个 chunk、并发峰值 8）。
+这是框架相对手写版最值钱的一处收益，本文其余章节的实验装置从未测出
+过它。
+
+但反面同样要写清楚：并发无上界时，真实课标几百个条目会瞬间打出几十路
+并发 LLM 请求，直接撞 provider 的速率限制——而 `extract_all`/
+`review_drafts`/`review_edges` 六层纯函数一律"逐条 `try/except`：非
+编程错误转成 `DropRecord`、`continue`"（同上文"框架强加了什么"第 1
+条），意味着并发失控的后果**不是崩溃、是安静地把大半 draft/review
+结果吞成 `DropRecord` 丢掉**——`RetryPolicy` 按本文自己的结论根本
+够不着这类故障（它只在整层调用彻底失败时触发）。全分支审查发现这个洞
+后（Important 1，commit `c2db4e6`），`build_fanout_graph` 现在默认
+`max_concurrency=8`，用 `asyncio.Semaphore` 包住 `extract_one`/
+`review_one`。**这个 8 是工程判断，不是校准过的数字**——docstring 里
+明确写了"未做任何 provider 端实测校准"，生产接入前应按实际 provider
+（本项目目前是 DeepSeek）的并发/QPS 配额重新核实。
 
 ### 这个收益要用什么代价换
 
@@ -270,7 +391,7 @@ checkpoint_only_reruns_the_failed_chunk` 用另一份更小的 2-chunk fixture
 逻辑），而且第一章的全部代价（1）-（7）在 B 阶段一条都没有减免。
 
 **4. 如果团队已经有一套跑得动、能落盘检查、能写跨层守恒断言的纯函数
-流水线（本项目 159→233 个测试的路子），引入 LangGraph 的决策不该基于
+流水线（本项目 159→239 个测试的路子），引入 LangGraph 的决策不该基于
 "框架应该会让恢复更省事"这种直觉——第一章的 `hard_crash` vs
 `partial_crash` 对照已经证明，同一个"框架帮你省调用"的直觉印象，换一个
 故障注入的精确时机，数字可以缩水到只剩 1/3 左右。量化承诺前应该先用
