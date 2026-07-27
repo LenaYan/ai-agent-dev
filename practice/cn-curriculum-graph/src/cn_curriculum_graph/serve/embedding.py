@@ -24,7 +24,7 @@ class Embedder(Protocol):
     def encode(self, texts: list[str]) -> list[list[float]]: ...
 
 
-DEFAULT_MODEL = "BAAI/bge-m3"
+DEFAULT_MODEL: str = "BAAI/bge-m3"
 
 _MISSING_DEP = (
     "向量检索需要可选依赖，未安装。装它：\n"
@@ -32,6 +32,17 @@ _MISSING_DEP = (
     "（约 GB 级下载；默认的 uv sync 不装它，CI 也不装 —— "
     "领域层的单测靠假 embedder 跑，不需要模型。）"
 )
+
+
+def _require_sentence_transformers() -> None:
+    """检查 sentence-transformers 是否可用，否则报出人话错误。
+
+    由 build_embedder() 和 _ensure_model() 都调用，消除重复的依赖检查逻辑。
+    """
+    try:
+        import sentence_transformers  # noqa: F401
+    except ModuleNotFoundError as exc:
+        raise ImportError(_MISSING_DEP) from exc
 
 
 class BGEEmbedder:
@@ -48,16 +59,18 @@ class BGEEmbedder:
 
     def _ensure_model(self):
         if self._model is None:
-            try:
-                from sentence_transformers import SentenceTransformer
-            except ModuleNotFoundError as exc:  # pragma: no cover - 见 test_embedding.py
-                raise ImportError(_MISSING_DEP) from exc
+            _require_sentence_transformers()
+            from sentence_transformers import SentenceTransformer
             self._model = SentenceTransformer(self.model_name, device=self._device)
         return self._model
 
     def encode(self, texts: list[str]) -> list[list[float]]:
+        """把文本批量编码成向量。
+
+        依赖 sentence-transformers 返回 numpy 数组（显式传 convert_to_numpy=True）。
+        """
         model = self._ensure_model()
-        return [list(map(float, v)) for v in model.encode(texts, normalize_embeddings=True)]
+        return [list(map(float, v)) for v in model.encode(texts, normalize_embeddings=True, convert_to_numpy=True)]
 
 
 def build_embedder(model_name: str | None = None) -> Embedder:
@@ -66,8 +79,5 @@ def build_embedder(model_name: str | None = None) -> Embedder:
     这里就地做一次依赖检查，好让"没装依赖"在脚本启动时报出人话，
     而不是等第一次 encode 时抛一句 ModuleNotFoundError。
     """
-    try:
-        import sentence_transformers  # noqa: F401
-    except ModuleNotFoundError as exc:
-        raise ImportError(_MISSING_DEP) from exc
+    _require_sentence_transformers()
     return BGEEmbedder(model_name or DEFAULT_MODEL)

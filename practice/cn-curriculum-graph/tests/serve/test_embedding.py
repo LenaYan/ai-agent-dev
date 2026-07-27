@@ -39,3 +39,30 @@ def test_build_embedder_accepts_a_model_override():
     import inspect
 
     assert "model_name" in inspect.signature(build_embedder).parameters
+
+
+def test_lazy_load_path_also_says_how_to_fix_missing_dependency(monkeypatch):
+    """直接构造 BGEEmbedder、不经 build_embedder 的路径下，缺依赖时也得报人话。
+
+    这锁定"延迟加载路径（首次 encode 时才加载模型）自己也会给出人话错误"这条性质。
+    """
+    import builtins
+
+    real_import = builtins.__import__
+
+    def blocked(name, *args, **kwargs):
+        if name.startswith("sentence_transformers"):
+            raise ModuleNotFoundError("No module named 'sentence_transformers'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked)
+
+    from cn_curriculum_graph.serve.embedding import BGEEmbedder
+
+    embedder = BGEEmbedder()  # 构造本身不报错（延迟加载）
+
+    # 首次 encode 时才加载模型、才检查依赖
+    with pytest.raises(ImportError) as excinfo:
+        embedder.encode(["随便"])
+
+    assert "uv sync --extra embed" in str(excinfo.value)
