@@ -11,6 +11,7 @@ B 阶段的架构已经偏离"与手写版对等"这条硬标准，硬凑对等�
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 
@@ -294,3 +295,37 @@ def test_fanout_bounds_concurrent_review_calls(tmp_path):
 
     assert not has_errors(findings)
     assert state["peak"] <= 2, f"并发峰值应被 max_concurrency=2 限制住，实际峰值：{state['peak']}"
+
+
+def test_default_concurrency_tracks_the_real_binding_constraint():
+    """默认值必须跟着**真实约束**走，不能是一个魔数。
+
+    实测校准（`scripts/calibrate_concurrency.py`，deepseek-v4-flash，
+    2026-07-27，见 `docs/concurrency-calibration.md`）确定了三件事：
+
+    1. provider 侧根本不是瓶颈 —— DeepSeek 官方文档给的是**账户级并发连接
+       数**上限 2500(flash)/500(pro)，全程 0 个 429；原来的默认值 8 比它低
+       两个数量级，"保守"这个词用错了地方。
+    2. 真正的天花板在本机：每个 LLM 调用都走 `await asyncio.to_thread(...)`
+       （为让 `NODE_TIMEOUT` 生效被逼出来的，见 graph.py 的 C1 记录），而
+       `to_thread` 用的是 CPython 默认 executor，`max_workers =
+       min(32, cpu_count + 4)`。并发设 32 时实测在飞峰值只有 20。
+    3. 吞吐拐点正好压在这道天花板上：8→19 吞吐 6.49→12.60/s 一路涨，
+       再往上到 24 反而回落到 12.09/s、p95 从 1458ms 涨到 2143ms（纯排队）。
+
+    所以默认值 = 这道天花板本身。写成公式而不是抄下当天那台机器上的 19：
+    换台机器 cpu 数不同，抄来的常数就又变回没有依据的魔数了。
+    """
+    assert graph_fanout_mod.DEFAULT_MAX_CONCURRENT_LLM_CALLS == min(32, (os.cpu_count() or 1) + 4)
+
+
+def test_concurrency_above_the_thread_pool_ceiling_warns_instead_of_silently_capping():
+    """设了拿不到的并发数必须出声。
+
+    信号量放行 64 个任务，`asyncio.to_thread` 那边只有 ~19 个工人，多出来的
+    只会排在线程池队列里 —— 现象是"我明明调到 64 了怎么没变快"，而代码里
+    没有任何地方会告诉你原因。本项目对"静默"一贯的态度是：宁可吵，也不要
+    让人对着一个不生效的旋钮调半天。
+    """
+    with pytest.warns(RuntimeWarning, match="线程池"):
+        graph_fanout_mod.build_fanout_graph(max_concurrency=10_000)

@@ -38,10 +38,16 @@ from __future__ import annotations
 
 import asyncio
 import operator
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
 from typing import Annotated, TypedDict
 
+import aiosqlite
+from langgraph._internal._serde import build_serde_allowlist
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import RetryPolicy
@@ -90,25 +96,32 @@ from cn_curriculum_graph.validators.base import Finding, Severity
 # 抛出的非哨兵错误（见下面 I1 一节：整层重跑会真的把已成功的条目也重新
 # 处理一遍，那才是有真实 LLM 调用代价的地方）。
 #
-# **我的取舍（ValueError 的边界，S3 明确要求想清楚）**：这里选择的是"全部
-# ValueError 都不重试"，而不是只精确排除"空 judges"这一种情形（那样做需要
-# 一个自定义异常类型或错误码来区分，改动更大，且当前六层函数确实统一用
-# ValueError 表达"确定性配置/契约错误"这一类语义，见 assemble.py 的 id
-# 碰撞检查、review.py 的空 judges 检查——它们都不是"重试一次也许会好"的
-# 瞬时故障）。这个取舍的已知代价：
-# 1. pydantic 的 ValidationError 是 ValueError 的子类。若它意外从某个
-#    Node 体冒泡到这一层（今天的六层函数不会——DraftContent/ProposedEdge
-#    等模型的构造都在各自模块内部完成并被其 PROGRAMMING_ERRORS/Exception
-#    分层捕获），也会被归类为"不重试"。我认为这是可接受的：schema 校验
-#    失败通常是数据形状问题，同一份输入重试三次不会自愈。
-# 2. DeepSeekExtractor/_DeepSeekVoter 在模型没调用强制工具时会
-#    `raise ValueError("模型未调用 XXX 工具...")`——这是一种理论上"重试
-#    也许换个结果"的情形。但今天这个 ValueError 总是先被 extract_all /
-#    review_drafts / review_edges 各自的逐条 try/except 吞掉、转成
-#    DropRecord，不会以裸 ValueError 的身份冒泡到 Node 体外层、也就摸不到
-#    这条 retry_on 排除规则。也就是说，当前代码路径下这条代价是"理论上
-#    存在、实际不会触发"；如果未来六层函数的 catch 边界发生变化，这一点
-#    需要重新评估。
+# **重评结论（2026-07-27，接真模型上量前的三件事之一；完整清单与可达性
+# 分析见 `docs/error-taxonomy.md`，断言见 `tests/test_error_taxonomy.py`）**
+#
+# 原来这里记着一条已知代价：五处"模型未调用 XXX 工具"抛的也是 ValueError，
+# 那是**唯一一类重试可能真的有用**的情形，只是"今天恰好被各层逐条
+# try/except 吞掉、摸不到这条排除规则"，并附了一句"如果未来 catch 边界
+# 发生变化，这一点需要重新评估"。重评把全部 ValueError 抛出点走了一遍：
+#
+# 1. **今天的误伤面确实是零，但零是"恰好"来的**——靠的是 catch 边界的
+#    当前形状，不是任何结构约束。等于给未来的自己埋了一颗雷。
+# 2. **收窄排除集合是错的方向**。可达这条规则的 ValueError 不止空 judges
+#    哨兵：`io.append_drops` 直接在四个挂了 retry_policy 的 Node 体里
+#    `json.loads` 已有的 dropped.json（不在任何逐条 try/except 内），文件
+#    被改坏时抛的 `json.JSONDecodeError`、非 UTF-8 时抛的
+#    `UnicodeDecodeError` 都是 ValueError 子类，而它们是彻头彻尾的确定性
+#    错误——收窄成某个自定义类型会把这些变成可重试的，纯亏。
+# 3. **真正的病根是那五处用错了类型**。"模型没按要求调工具"不是值错误，
+#    是**远端服务的协议违约**，与限流/超时/网络抖动同类。所以修法是把它
+#    搬出 ValueError：新增 `errors.ToolCallMissingError(RuntimeError)`。
+#
+# 改完之后，"ValueError = 确定性错误，一律不重试"从**碰巧成立**变成
+# **按构造成立**：这个项目里 ValueError 现在只被用来表达确定性的配置 /
+# 契约 / 数据错误（review.py 的空 judges 哨兵、assemble.py 的 id 碰撞与
+# 未知 draft id、models.py 的自环与年级区间校验，以及 stdlib/pydantic 的
+# JSONDecodeError / UnicodeDecodeError / ValidationError 这些子类），
+# 重试它们只是把同一个错犯三遍。
 NODE_RETRY_EXCLUDED_ERRORS = PROGRAMMING_ERRORS + (ValueError,)
 
 
@@ -181,6 +194,129 @@ RETRY_POLICY = RetryPolicy(max_attempts=3, retry_on=retry_on)
 # timeout + 一个卡死的 HTTP 请求），`run_pipeline_lg` 会在超时后再阻塞
 # 最多 5 分钟才真正返回。
 NODE_TIMEOUT = timedelta(minutes=10)
+
+
+def build_checkpoint_serde() -> JsonPlusSerializer:
+    """checkpoint 用的序列化器：**主动开启严格 msgpack 模式**。
+
+    背景（langgraph 1.2.9 / langgraph-checkpoint 4.1.1，2026-07-27 实测，
+    完整论证与反例见 `tests/pipeline/test_checkpoint_serde.py` 的模块文档）：
+
+    - 本项目此前记着一条待办"注册 `allowed_msgpack_modules`，否则升级
+      langgraph 会让 checkpoint 整个失效"。**这条判断有两处不成立。**
+    - 其一，框架已经替你注册了：`StateGraph.compile(checkpointer=...)` 会
+      用 `_serde.build_serde_allowlist(schemas=[state_schema])` 递归遍历
+      state 的类型标注，收齐其中的 pydantic 模型 / dataclass / Enum，再调
+      `checkpointer.with_allowlist(...)` 返回一个带 allowlist 的**克隆**。
+      本项目 11 个自定义类型一个不落。手写一份 allowlist 反而更差——它会
+      和 state schema 漂移，而框架的推导不会。
+    - 其二，漏注册的后果不是"失效"，是**静默把 pydantic 模型降级成 dict**
+      （`jsonplus.py` 的 ext hook 在拒绝时 `return tup[2]`，即 kwargs 本身）。
+      症状会表现为下游某个 Node 上一句 `AttributeError: 'dict' object has
+      no attribute 'draft_id'`，看起来完全像业务代码的 bug。
+
+    那还剩什么要做？**把默认从宽松改成严格。** langgraph 当前默认是
+    `allowed_msgpack_modules=True`（宽松：未注册类型只警告不拦截），而在
+    宽松基线上 `with_allowlist()` 是彻底的 no-op（见
+    `JsonPlusSerializer.with_msgpack_allowlist`：`base_allowlist is True`
+    时直接 `return self`）——也就是说**框架辛苦推导出来的 allowlist 在默认
+    配置下根本没被记录**，要等 langgraph 把默认翻成严格的那天才第一次生效。
+    真到那天，任何漏网类型是在生产续跑时现形的。
+
+    这里传一个空 allowlist（`()`，被 `_normalize_allowlist` 归一成 None，
+    即"只允许内置安全类型"）作为基线，再由 `apply_state_allowlist()` 把
+    state schema 推导出的类型合并上来。效果是：**未来版本的默认行为今天
+    就生效**，漏注册在 CI 里当场暴露，而不是留到升级那天在生产暴露。
+
+    **⚠️ 这个 serde 必须和 `apply_state_allowlist()` 成对使用**，单独用它
+    是三种配置里最糟的一种——见那个函数的文档（框架的自动推导被环境变量
+    门控，不开环境变量时"严格 serde"= 严格拦截 + 零 allowlist）。
+
+    代价（如实记下）：从今天起，任何"进了 checkpoint 但没在 state schema
+    上精确声明类型"的值（`Any`、裸 `dict` 标注等）都会立刻降级成 dict，而
+    不是像宽松模式那样再宽限一个版本。这正是我们想要的——但它确实是一条
+    今天就生效的额外约束，不是白拿的。`test_a_loosely_typed_channel_is_not_
+    covered_by_auto_derivation` 把这个前提钉成了会失败的断言。
+    """
+    return JsonPlusSerializer(allowed_msgpack_modules=())
+
+
+def apply_state_allowlist(
+    builder: StateGraph, saver: BaseCheckpointSaver
+) -> BaseCheckpointSaver:
+    """把 `builder` 的 state schema 推导出的类型合并进 `saver` 的 msgpack
+    allowlist，返回一个新的 saver（`with_allowlist` 是克隆语义，不改原对象）。
+
+    **为什么要自己做一遍，而不是让 compile 去做**（实测踩坑，不是洁癖）：
+    `StateGraph.compile()` 里那段自动推导整个被一个 `if
+    _serde.STRICT_MSGPACK_ENABLED:` 包着（langgraph 1.2.9 `graph/state.py`
+    第 1221 行），而这个常量是**在 import 时从环境变量 `LANGGRAPH_STRICT_
+    MSGPACK` 读死的**。也就是说自动推导的开关和序列化器严格与否是**两个
+    独立的东西**，而它们的组合里有一个陷阱：
+
+    | serde 基线 | 环境变量 | 结果 |
+    |---|---|---|
+    | 宽松（框架默认） | 未设 | 能跑，但 allowlist 从未生效，升级即翻车 |
+    | 严格 | 已设 | 能跑，推导生效（这是框架设计的用法） |
+    | **严格** | **未设** | **严格拦截照常生效、推导整个跳过 → 全部类型降级成 dict** |
+
+    最后这一行就是我们第一版实现踩中的：只把 serde 换成严格、以为 compile
+    会自动补上 allowlist，结果续跑当场炸出
+    `AttributeError: 'dict' object has no attribute 'draft_id'`
+    （`edges.py::propose_all` 的第一行）——比什么都不做更糟。
+
+    修法有两条路，这里选了第二条：
+    1. 要求运行环境设 `LANGGRAPH_STRICT_MSGPACK=true`。是官方支持的做法，
+       但**靠环境变量兜底的安全配置，漏设时是静默降级**，且它是进程级全局
+       开关，会影响同进程里其他 langgraph 使用者。学习项目里 CLI、pytest、
+       将来的 MCP server 三个入口都得记得设，迟早漏一个。
+    2. 自己调框架那份推导函数，显式 `with_allowlist`。**与环境变量无关**，
+       CLI / pytest / server 任何入口都一致。代价是依赖了一个私有模块
+       (`langgraph._internal._serde`)——如实记账：这是本项目唯一一处
+       import langgraph 私有 API。`test_langgraph_still_exposes_the_
+       allowlist_derivation_helper` 专门盯着它，将来 langgraph 挪走或改名
+       会在升级时当场变红，而不是变成一次静默的保护失效。
+
+    收集哪些 schema 也照抄框架那段（state/input/output/context + 每个 Node
+    的 input_schema + 每个 branch 的 input_schema + channels）——不是只传
+    `state_schema`。B 阶段的 `Send` payload（`_ExtractOne`/`_ReviewOne`）
+    正是通过 "Node 的 input_schema" 这一路被收进来的，只传 state schema
+    会漏掉它们所依赖的类型来源。
+    """
+    schemas = [builder.state_schema, builder.input_schema, builder.output_schema]
+    if builder.context_schema is not None:
+        schemas.append(builder.context_schema)
+    schemas += [node.input_schema for node in builder.nodes.values()]
+    schemas += [
+        branch.input_schema
+        for branches in builder.branches.values()
+        for branch in branches.values()
+        if branch.input_schema is not None
+    ]
+    allowlist = build_serde_allowlist(schemas=schemas, channels=builder.channels)
+    return saver.with_allowlist(allowlist)
+
+
+@asynccontextmanager
+async def open_checkpointer(checkpoint_db: Path) -> AsyncIterator[AsyncSqliteSaver]:
+    """打开带严格 serde 的 `AsyncSqliteSaver`。
+
+    没有用 `AsyncSqliteSaver.from_conn_string()`：它的签名是
+    `(cls, conn_string)`，**不接受 `serde`**，拿不到自定义序列化器。这里用的
+    是该类 docstring 里"Raw usage"那一段的等价写法（`aiosqlite.connect` +
+    `AsyncSqliteSaver(conn, serde=...)`）——`from_conn_string` 的实现本身
+    就是 `async with aiosqlite.connect(conn_string) as conn: yield cls(conn)`，
+    除了多传一个 serde 之外行为完全一致。
+
+    注意：这里 yield 出去的 saver 自己**没有** allowlist（只有严格基线）。
+    allowlist 是 `compile(checkpointer=saver)` 合并进去的，而且合并结果在
+    compile 返回的那个**克隆**上，不在这个原始对象上。所以拿这个 saver 直接
+    `aget_tuple()` 看到的是降级后的 dict，而经由 compiled app 走的执行路径
+    拿到的是真模型 —— 两者不一致是设计如此，不是 bug（这一点曾经把我们
+    自己误导过一轮，写在这里免得下次再踩）。
+    """
+    async with aiosqlite.connect(str(checkpoint_db)) as conn:
+        yield AsyncSqliteSaver(conn, serde=build_checkpoint_serde())
 
 
 class PipelineState(TypedDict, total=False):
@@ -535,8 +671,9 @@ def run_pipeline_lg(
         if checkpoint_db is None:
             app = build_graph().compile()
             return await app.ainvoke(payload, config=config, context=deps)
-        async with AsyncSqliteSaver.from_conn_string(str(checkpoint_db)) as saver:
-            app = build_graph().compile(checkpointer=saver)
+        async with open_checkpointer(checkpoint_db) as saver:
+            builder = build_graph()
+            app = builder.compile(checkpointer=apply_state_allowlist(builder, saver))
             # 续跑：同一 thread_id 已有 checkpoint 时传 None，
             # LangGraph 会从上次中断处继续，而不是从头再来
             existing = await app.aget_state(config)

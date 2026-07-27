@@ -9,6 +9,7 @@
 import pytest
 from types import SimpleNamespace
 
+from cn_curriculum_graph.errors import ToolCallMissingError
 from cn_curriculum_graph.judges.deepseek_judge import (
     DEEPSEEK_BASE_URL,
     DEFAULT_MODEL,
@@ -97,11 +98,15 @@ def test_tool_schema_comes_from_verdict():
 
 
 def test_raises_clear_error_when_model_skips_the_tool():
+    """类型是 `ToolCallMissingError` 而非 `ValueError` —— 理由同
+    `tests/pipeline/test_extract.py` 的同名场景，完整论证见
+    `tests/test_error_taxonomy.py`。
+    """
     recorder = _Recorder()
     # 模型没调工具，只回了段文本
     client = _fake_client(recorder, content=[SimpleNamespace(type="text", text="我觉得不一致")])
 
-    with pytest.raises(ValueError, match=VERDICT_TOOL_NAME):
+    with pytest.raises(ToolCallMissingError, match=VERDICT_TOOL_NAME):
         DeepSeekJudge(client=client)(name="平均数", description="一组数据的总和除以个数")
 
 

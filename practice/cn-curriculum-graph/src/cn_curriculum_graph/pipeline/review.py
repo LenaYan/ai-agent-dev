@@ -18,6 +18,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from cn_curriculum_graph.judges.deepseek_judge import DEEPSEEK_BASE_URL
+from cn_curriculum_graph.errors import ToolCallMissingError
 from cn_curriculum_graph.pipeline.models import (
     PROGRAMMING_ERRORS,
     DropRecord,
@@ -116,7 +117,7 @@ class _DeepSeekVoter:
                 return Vote(
                     reviewer=self._model, approved=payload.approved, reason=payload.reason
                 )
-        raise ValueError(f"模型未调用 {self._tool_name} 工具，返回：{response.content!r}")
+        raise ToolCallMissingError(f"模型未调用 {self._tool_name} 工具，返回：{response.content!r}")
 
 
 class DeepSeekFidelityJudge(_DeepSeekVoter):

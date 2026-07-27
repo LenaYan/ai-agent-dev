@@ -12,6 +12,15 @@
 
 ---
 
+## 2026-07-27 — 接真模型上量前的三件事：三条原判断全被自己推翻
+- **元收获（比三条技术结论都值钱）**：这三件事都是上一轮实验**自己写进待办**的"已知技术债"，条条言之凿凿。真去还债时，**三条的前提全部不成立**。共同的病根：待办是在**读到一句警告 / 想到一个理论风险**的当下写的，没有一条是"实测到症状"之后写的。教训不是"别写待办"，而是**待办要标清"这条是实测出来的还是推断出来的"**——推断类待办在动手前必须先花十分钟证伪，否则会照着一个错误前提去改，而"照错误前提改出来的东西"可能比不改更糟（第 ③ 条就是活例子）。
+- **① `ValueError` 不重试的误伤面**：原以为要收窄排除集合。全量走完 13 处抛出点后发现——**误伤面今天是零，但零是"恰好"来的**：靠六层函数 catch 边界的当前形状，不是任何结构约束。而**收窄是错的方向**：可达 `retry_on` 的 `ValueError` 不止空 judges 哨兵，`io.append_drops` 直接在四个挂了 retry_policy 的 Node 体里 `json.loads` dropped.json，`JSONDecodeError`/`UnicodeDecodeError` 都是 `ValueError` 子类且都可达，收窄会把这些**确定性**错误变成可重试的，纯亏。**真正的病根是那五处"模型未调用工具"用错了类型**——那不是值错误，是远端服务的协议违约，与限流/超时同类。修法是把它搬出 `ValueError`（新增 `ToolCallMissingError(RuntimeError)`），于是"`ValueError` = 确定性错误 = 不重试"从**碰巧成立**变成**按构造成立**。
+- **② 并发上限校准**：原默认值 8 的注释写着"保守起点"。查官方文档发现 **DeepSeek 不设 RPM/TPM，只设账户级并发连接数 2500(flash)/500(pro)**——8 低了两个数量级，**它保守的是一个根本不紧的约束**。全档爬坡 0 个 429。真正的天花板是 `asyncio.to_thread` 的**默认线程池 `min(32, cpu+4)`**：并发设 32，实测在飞峰值只有 20。**而这道墙是我们自己为了让 `NODE_TIMEOUT` 生效而引入的**（`async def` 必须真 `await`，于是所有阻塞调用被扔进线程池）——超时能力与并发天花板是同一个决定的两面，此前从没被联系起来看过。吞吐拐点正好压在这道墙上（19 → 12.60 req/s；24 → 12.09 且 p95 +47%，纯排队）。默认值改成公式 `min(32, cpu+4)`，而不是抄下当天那台机器上的 19。
+- **③ `allowed_msgpack_modules`**：原判断"未注册，升级 langgraph 会让 checkpoint 整个失效"。**两处都不成立**：(a) 框架 compile 时**已经自己**从 state schema 递归推导 allowlist（`_serde.build_serde_allowlist`），11 个自定义类型一个不落——手写一份反而更差，它会和 schema 漂移；(b) 未注册的后果不是"失效"，是**静默把 pydantic 模型降级成裸 dict**（ext hook 拒绝时 `return tup[2]` 返回 kwargs），症状是下游一句 `AttributeError: 'dict' object has no attribute 'draft_id'`——**看起来完全像业务代码的 bug**，排查方向从一开始就是错的。**真正的坑在两个独立开关的组合上**：自动推导被 `if STRICT_MSGPACK_ENABLED:`（环境变量，import 时读死）门控，而"序列化器严不严格"是另一回事；`严格 serde + 未设环境变量` 这一格**比什么都不做更糟**（严格拦截照常生效、推导整个跳过）——这正是我第一版修复踩中的，续跑当场炸。最终不依赖环境变量，自己调那份推导函数显式 `with_allowlist`。
+- **顺带发现的空档**：校准出一个默认并发值，才发现 `--engine` 根本没有扇出版选项——`max_concurrency` 此前只有实验脚本和测试碰得到。**一个调好的参数如果没有生产路径能用上，调参就只是自娱自乐。** 已补 `--engine langgraph-fanout` + `--max-concurrency`（配另外两个引擎时当场退出而非静默忽略）。
+- 产出：`errors.py`、`docs/error-taxonomy.md`、`docs/concurrency-calibration.md`、`scripts/calibrate_concurrency.py`、`graph.py` 的 `build_checkpoint_serde`/`open_checkpointer`/`apply_state_allowlist`、`tests/pipeline/test_checkpoint_serde.py`、`tests/test_error_taxonomy.py`、`tests/test_calibrate_concurrency.py`、`tests/pipeline/test_run_cli.py`；276 测试（+37）。全程 TDD。真实端到端跑通（fanout + 严格 serde + checkpoint，3 条课标 → 4 节点，55s，0 error）。
+- 下一步：**MCP server，把图暴露给 agent** —— 从"造数据"切到"用数据"，反过来验证 schema 里 `misconceptions`/`evidence` 这些字段到底能不能被用起来。
+
 ## 2026-07-06 — 支持 Copilot CLI + Claude Code 双工具
 - 收获：Claude Code 默认只读 CLAUDE.md（不读 AGENTS.md），Copilot 两者都读。以 AGENTS.md 为单一事实来源，CLAUDE.md 用 @AGENTS.md 导入桥接，避免重复维护。工具专属配置分放 .github/ 与 .claude/。
 - 产出：CLAUDE.md、AGENTS.md §6、.gitignore、ADR-0003

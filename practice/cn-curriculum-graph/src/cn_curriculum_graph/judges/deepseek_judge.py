@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from cn_curriculum_graph.errors import ToolCallMissingError
 from cn_curriculum_graph.judges.prompt import JUDGE_SYSTEM, build_user_message
 from cn_curriculum_graph.validators.consistency import Verdict
 
@@ -66,4 +67,4 @@ class DeepSeekJudge:
             if block.type == "tool_use" and block.name == VERDICT_TOOL_NAME:
                 # 强制 tool_choice 只保证"调了工具"，不保证参数合法，仍要过一遍 Verdict
                 return Verdict.model_validate(block.input)
-        raise ValueError(f"模型未调用 {VERDICT_TOOL_NAME} 工具，返回：{response.content!r}")
+        raise ToolCallMissingError(f"模型未调用 {VERDICT_TOOL_NAME} 工具，返回：{response.content!r}")

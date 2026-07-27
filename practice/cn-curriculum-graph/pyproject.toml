@@ -12,6 +12,13 @@ dependencies = [
     "anthropic>=0.69",
     "langgraph>=1.2.9",
     "langgraph-checkpoint-sqlite>=3.1.0",
+    # 直接 import（`pipeline/graph.py::open_checkpointer`）而非仅靠传递依赖：
+    # `AsyncSqliteSaver.from_conn_string()` 不接受 serde 参数，要传自定义
+    # 序列化器只能走它 docstring 里那段 `aiosqlite.connect` + `AsyncSqliteSaver(
+    # conn, serde=...)` 的写法。虽然 langgraph-checkpoint-sqlite 一定会把它
+    # 装上，但"我们直接 import 的东西"就该显式声明，否则上游哪天换掉异步
+    # 驱动，我们会在 import 时才发现。
+    "aiosqlite>=0.20",
 ]
 
 [project.scripts]

@@ -16,6 +16,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ConfigDict
 
 from cn_curriculum_graph.judges.deepseek_judge import DEEPSEEK_BASE_URL
+from cn_curriculum_graph.errors import ToolCallMissingError
 from cn_curriculum_graph.pipeline.models import PROGRAMMING_ERRORS, DropRecord, Merge, TopicDraft
 
 DEFAULT_MODEL = "deepseek-v4-flash"
@@ -129,7 +130,7 @@ class DeepSeekSameTopicJudge:
             if block.type == "tool_use" and block.name == SAME_TOPIC_TOOL_NAME:
                 # 强制 tool_choice 只保证"调了工具"，不保证参数合法，仍要过一遍校验
                 return SameTopicVerdict.model_validate(block.input)
-        raise ValueError(f"模型未调用 {SAME_TOPIC_TOOL_NAME} 工具，返回：{response.content!r}")
+        raise ToolCallMissingError(f"模型未调用 {SAME_TOPIC_TOOL_NAME} 工具，返回：{response.content!r}")
 
 
 def _better_base(a: TopicDraft, b: TopicDraft) -> tuple[TopicDraft, TopicDraft]:

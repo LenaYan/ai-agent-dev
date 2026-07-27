@@ -67,9 +67,18 @@ uv run ccg-generate --source data/source --out data/generated \
 # 再跑一次同样的命令即可从上次中断处续跑，不重跑已完成的层
 ```
 
+**条目级扇出版**（B 阶段：抽取/审核真并发，checkpoint 粒度从"层"降到"条目"）：
+
+```bash
+uv run ccg-generate --source data/source --out data/generated \
+  --engine langgraph-fanout --checkpoint data/generated/.checkpoint.sqlite
+# --max-concurrency 默认 = min(32, cpu_count+4)，即本机 asyncio.to_thread
+# 线程池上界；这是实测校准出来的拐点，见 docs/concurrency-calibration.md
+```
+
 两个编排实现的取舍见 `docs/langgraph-vs-handwritten.md`——**代码量多
-1.65×~2.3×、msgpack 类型未注册、Node 级重试对多数真实故障不可达**等
-代价都在里面如实列出，不只是"框架更省事"这一面。
+1.65×~2.3×、msgpack 严格模式两个开关的组合陷阱、Node 级重试对多数真实
+故障不可达**等代价都在里面如实列出，不只是"框架更省事"这一面。
 
 跑受控实验复现这份笔记里的数字（fake 实现，非真实 API，见该脚本文档）：
 
@@ -275,12 +284,35 @@ assessmentPrompt 之间，不在 name 与 description 之间，因此刻意没�
    - `candidate_pairs` 是 O(n²) 且每对跑 `SequenceMatcher`，上量会撞墙
 6. 配 `ANTHROPIC_API_KEY`，把交叉审核换成跨训练谱系双票 ——
    现在是同族（flash + pro），误判高度相关，投两次约等于投一次
-7. MCP server，把图暴露给 agent
-8. ✅ ~~路线图"阶段四·主流框架"：LangGraph 编排对比~~ —— 同一份六层纯函数
+7. ✅ ~~接真模型上量前的三件事~~（2026-07-27，三条全部完成且都推翻了原判断）：
+   - **重评 `ValueError` 不重试的误伤面** → `docs/error-taxonomy.md`。
+     误伤面今天确实是零，但零是"恰好"来的（靠 catch 边界的当前形状）。
+     修法不是收窄排除集合（那会把 `JSONDecodeError`/`UnicodeDecodeError`/
+     `ValidationError` 这些真·确定性错误变成可重试的），而是把唯一一个
+     语义上不属于这类的异常搬出 `ValueError`：新增
+     `errors.ToolCallMissingError`。改完之后"`ValueError` = 不重试"
+     从碰巧成立变成按构造成立。
+   - **并发上限按实际配额校准** → `docs/concurrency-calibration.md`。
+     实测发现 **provider 根本不是瓶颈**：DeepSeek 给的是账户级并发连接数
+     2500(flash)/500(pro)，全档爬坡 0 个 429，原默认值 8 低了两个数量级。
+     真正的天花板是 `asyncio.to_thread` 的默认线程池 `min(32, cpu+4)`
+     ——那是当初为让 `NODE_TIMEOUT` 生效而引入的，两者是同一决定的两面。
+     吞吐拐点正好压在这道墙上（19 → 12.60 req/s，24 → 12.09 且 p95 +47%），
+     默认值改为跟着这道墙走的公式。顺带补上 `--engine langgraph-fanout`
+     与 `--max-concurrency`（此前扇出版没有任何生产入口）。
+   - **注册 `allowed_msgpack_modules`** → `tests/pipeline/test_checkpoint_serde.py`。
+     原判断"未注册会让 checkpoint 整个失效"两处不成立：框架 compile 时会
+     自己从 state schema 推导 allowlist；未注册的后果也不是失效，而是
+     **静默把 pydantic 模型降级成 dict**（症状是下游一句
+     `AttributeError: 'dict' object has no attribute ...`，看起来像业务
+     bug）。真正的坑是"serde 严格"与"自动推导"是**两个独立开关**，而
+     `严格 + 未设环境变量` 这一格比什么都不做更糟——已实测踩中并修复。
+8. MCP server，把图暴露给 agent
+9. ✅ ~~路线图"阶段四·主流框架"：LangGraph 编排对比~~ —— 同一份六层纯函数
    流水线接出手写版 / LangGraph 版 / LangGraph `Send` 扇出版三种编排实现，
    受控实验量出断点续跑的真实收益与代价，见 `docs/langgraph-vs-handwritten.md`
    （核心结论：省的是崩溃点上游的调用量，但代价是 1.65×~2.3× 代码量、
-   Node 级重试对多数真实故障不可达、msgpack 类型注册债、异步传染）
+   Node 级重试对多数真实故障不可达、msgpack 严格模式的开关陷阱、异步传染）
 
 > 法律定性（课标著作权，`docs/feasibility-analysis.md`）只卡"大规模生成 + 对外发布"；
 > 本地自用的流水线跑通不受影响。

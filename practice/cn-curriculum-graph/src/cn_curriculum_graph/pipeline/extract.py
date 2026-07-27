@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 from typing import Any, Protocol
 
+from cn_curriculum_graph.errors import ToolCallMissingError
 from cn_curriculum_graph.judges.deepseek_judge import DEEPSEEK_BASE_URL
 from cn_curriculum_graph.pipeline.models import (
     PROGRAMMING_ERRORS,
@@ -79,7 +80,7 @@ class DeepSeekExtractor:
             if block.type == "tool_use" and block.name == EXTRACT_TOOL_NAME:
                 # 强制 tool_choice 只保证"调了工具"，不保证参数合法
                 return DraftBatch.model_validate(block.input)
-        raise ValueError(f"模型未调用 {EXTRACT_TOOL_NAME} 工具，返回：{response.content!r}")
+        raise ToolCallMissingError(f"模型未调用 {EXTRACT_TOOL_NAME} 工具，返回：{response.content!r}")
 
 
 def extract_all(

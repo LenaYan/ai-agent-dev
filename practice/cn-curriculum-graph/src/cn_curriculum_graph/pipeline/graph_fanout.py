@@ -44,10 +44,11 @@ from __future__ import annotations
 
 import asyncio
 import operator
+import os
+import warnings
 from pathlib import Path
 from typing import Annotated, TypedDict
 
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
@@ -63,6 +64,8 @@ from cn_curriculum_graph.pipeline.graph import (
     node_chunk,
     node_dedupe,
     node_edges,
+    open_checkpointer,
+    apply_state_allowlist,
 )
 from cn_curriculum_graph.pipeline.models import Chunk, ReviewOutcome, TopicDraft
 from cn_curriculum_graph.pipeline.run import DEFAULT_CURRICULUM, PipelineDeps
@@ -237,7 +240,22 @@ async def _review_collect(state: FanoutState, runtime) -> dict:
     }
 
 
-DEFAULT_MAX_CONCURRENT_LLM_CALLS = 8
+def thread_pool_ceiling() -> int:
+    """`asyncio.to_thread` 在本机能提供的真并发上界。
+
+    CPython 的 `asyncio.to_thread` 用的是事件循环的**默认 executor**，即一个
+    `max_workers = min(32, os.cpu_count() + 4)` 的 `ThreadPoolExecutor`。
+    本流水线每一次 LLM 调用都走 `await asyncio.to_thread(...)`（那不是风格
+    选择，是为了让 `NODE_TIMEOUT` 真正生效被逼出来的，见 `graph.py` 的 C1
+    修复记录），所以这个数字就是"同一时刻真正能有几个请求在飞"的硬上界。
+
+    做成函数而不是模块级常量：`os.cpu_count()` 在容器里会随 cgroup 配额变，
+    调用时算才拿得到当时的真值。
+    """
+    return min(32, (os.cpu_count() or 1) + 4)
+
+
+DEFAULT_MAX_CONCURRENT_LLM_CALLS = thread_pool_ceiling()
 """`extract_one`/`review_one` 两处扇出点，同一时刻允许同时在飞的 LLM 调用数
 上限。
 
@@ -247,18 +265,36 @@ draft 数），此前完全没有上界。审查者实测：8 个 chunk、extrac
 `sleep(1s)`，LangGraph A 阶段（Node 粒度，无扇出）墙钟 8.08s、并发峰值 1；
 fanout 版墙钟 1.05s、并发峰值 8——`Send` 扇出让条目级抽取真并发执行，这是
 框架相对手写版最值钱的一处收益。但收益的B面是：真实课标几十/几百个条目
-会瞬间打出几十路并发 LLM 请求，直接撞 provider 的速率限制。extract_all/
+会瞬间打出几十路并发 LLM 请求，可能撞 provider 的速率限制。extract_all/
 review_drafts/review_edges 一致采用"逐条 try/except：非编程错误一律转成
 DropRecord，不冒泡"的策略（见 graph.py 的 I1），这意味着并发失控的后果
 *不是崩溃*——是安静地把大半 draft/review 结果吞成 DropRecord 丢掉；
 `RetryPolicy` 按 I1 的结论根本够不着这类故障（它只在整层调用彻底失败时
 触发）。
 
-**默认值 8 的理由（工程判断，非厂商 SLA 承诺——未做任何 provider 端实测
-校准）**：选一个不依赖任何具体 provider 文档、留出安全边际的保守起点，
-优先级是"先有上界"而不是"榨干吞吐"。生产接入前应参照实际 provider
-（本项目目前是 DeepSeek）的并发/QPS 配额重新核实这个数字，这里不代表 8
-对所有场景都是最优值——只保证不再是"无上界"。
+**默认值的由来（2026-07-27 实测校准，取代此前那个未校准的 8）**——
+完整数据与方法见 `docs/concurrency-calibration.md`、脚本见
+`scripts/calibrate_concurrency.py`：
+
+1. **provider 侧根本不是瓶颈。** DeepSeek 官方文档给的不是 RPM/TPM，而是
+   **账户级并发连接数**：`deepseek-v4-flash` 2500、`deepseek-v4-pro` 500，
+   超出返 429。1→32 全档爬坡实测 **0 个 429**。原来的默认值 8 比 flash 的
+   配额低了两个数量级——"保守"这个词当初用错了地方，它保守的是一个根本
+   不紧的约束。
+2. **真正的天花板在本机，就是 `thread_pool_ceiling()`。** 并发设 32 时
+   实测在飞峰值只有 20（`min(32, 15+4)=19` 那台机器）。
+3. **吞吐拐点正好压在这道天花板上。** 40 次请求/档：8→6.49 req/s、
+   12→8.90、16→10.69、19→**12.60**、24→12.09（回落），p95 同时从 1458ms
+   涨到 2143ms——纯排队，没有任何收益。
+
+所以默认值直接取 `thread_pool_ceiling()`，而不是抄下当天那台机器上的 19：
+换台机器 cpu 数不同，抄来的常数又会变回一个没有依据的魔数。
+
+**这个默认值的适用边界（如实写清）**：它是按"这条流水线独占本机默认线程池"
+校准的。若同一进程里还有别的 `asyncio.to_thread` 使用者，或账户上同时跑着
+别的 DeepSeek 负载（账户级配额是共享的），都应当调低。想调**高**则必须先
+换掉默认 executor（`loop.set_default_executor`），否则信号量放行再多也没用
+——`build_fanout_graph` 会为此发一条 `RuntimeWarning`。
 
 extract_one 与 review_one 共用同一个信号量：二者在流水线里时间上不重叠
 （review 扇出发生在 extract 全部收敛、经过 dedupe/edges 之后），共用不会
@@ -269,6 +305,23 @@ extract_one 与 review_one 共用同一个信号量：二者在流水线里时�
 def build_fanout_graph(
     max_concurrency: int = DEFAULT_MAX_CONCURRENT_LLM_CALLS,
 ) -> StateGraph:
+    ceiling = thread_pool_ceiling()
+    if max_concurrency > ceiling:
+        # 不静默截断。信号量确实会放行这么多任务，但它们会堵在
+        # `asyncio.to_thread` 的默认线程池队列里——现象是"我明明调到 64 了
+        # 怎么没变快"，而代码里没有任何地方会告诉你原因。本项目对"静默"
+        # 一贯的态度是宁可吵：与其让人对着一个不生效的旋钮调半天，不如
+        # 当场说清楚它为什么不生效、以及要怎样才能生效。
+        warnings.warn(
+            f"max_concurrency={max_concurrency} 超过了本机 asyncio.to_thread "
+            f"默认线程池的上界 {ceiling}（min(32, cpu_count+4)）。多出来的任务"
+            "只会排队，不会带来更多真并发。要真正提高并发，需要先用 "
+            "loop.set_default_executor() 换一个更大的 ThreadPoolExecutor；"
+            "另外注意 DeepSeek 的账户级并发配额是 2500(flash)/500(pro)，"
+            "越过本机这道墙之后下一道才是它。",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     semaphore = asyncio.Semaphore(max_concurrency)
 
     async def _bounded_extract_one(payload: _ExtractOne, runtime) -> dict:
@@ -343,8 +396,13 @@ def run_pipeline_fanout(
         if checkpoint_db is None:
             app = build_fanout_graph(max_concurrency=max_concurrency).compile()
             return await app.ainvoke(payload, config=config, context=deps)
-        async with AsyncSqliteSaver.from_conn_string(str(checkpoint_db)) as saver:
-            app = build_fanout_graph(max_concurrency=max_concurrency).compile(checkpointer=saver)
+        # 同 `run_pipeline_lg`：走 graph.py 的 `open_checkpointer`，拿到带
+        # 严格 msgpack 基线的 saver（理由见 `build_checkpoint_serde` 的文档）。
+        # 两个引擎共用同一个入口，避免"改了 A 忘了 B"——B 阶段的
+        # `FanoutState` 比 A 多两个累加字段，正是最容易漏的地方。
+        async with open_checkpointer(checkpoint_db) as saver:
+            builder = build_fanout_graph(max_concurrency=max_concurrency)
+            app = builder.compile(checkpointer=apply_state_allowlist(builder, saver))
             existing = await app.aget_state(config)
             if existing.next != ():
                 _ensure_consistent_resume(existing.values, payload, thread_id=thread_id)

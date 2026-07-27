@@ -204,6 +204,12 @@ def derive_thread_id(source: Path, out: Path) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # 延迟 import：`graph.py`/`graph_fanout.py` 都从本模块 import
+    # `PipelineDeps`/`DEFAULT_CURRICULUM`，放到模块顶层会形成循环 import。
+    # 放在这里的额外好处是 `--engine handwritten` 根本不需要装 langgraph。
+    from cn_curriculum_graph.pipeline import graph as graph_mod
+    from cn_curriculum_graph.pipeline import graph_fanout as fanout_mod
+
     parser = argparse.ArgumentParser(
         prog="ccg-generate", description="从课标原文生成知识依赖图"
     )
@@ -217,12 +223,30 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--engine",
-        choices=("handwritten", "langgraph"),
+        choices=("handwritten", "langgraph", "langgraph-fanout"),
         default="handwritten",
-        help="编排实现。两者行为对等，langgraph 版额外支持 --checkpoint 断点续跑",
+        help=(
+            "编排实现。handwritten 与 langgraph 行为对等，后者额外支持 --checkpoint "
+            "断点续跑（粒度=层）；langgraph-fanout 是 B 阶段条目级扇出，checkpoint "
+            "粒度降到条目、且抽取/审核真并发执行，代价是架构已不与手写版对等"
+        ),
     )
     parser.add_argument(
-        "--checkpoint", type=Path, default=None, help="checkpoint 数据库路径（仅 langgraph）"
+        "--checkpoint",
+        type=Path,
+        default=None,
+        help="checkpoint 数据库路径（仅 langgraph / langgraph-fanout）",
+    )
+    parser.add_argument(
+        "--max-concurrency",
+        dest="max_concurrency",
+        type=int,
+        default=None,
+        help=(
+            "同时在飞的 LLM 调用数上限（仅 langgraph-fanout）；不传则用实测校准出的"
+            f"默认值 {fanout_mod.DEFAULT_MAX_CONCURRENT_LLM_CALLS}"
+            "（= 本机 asyncio.to_thread 线程池上界，见 docs/concurrency-calibration.md）"
+        ),
     )
     parser.add_argument(
         "--thread-id",
@@ -241,21 +265,36 @@ def main(argv: list[str] | None = None) -> int:
 
     models = [m.strip() for m in args.models.split(",") if m.strip()]
 
-    if args.engine == "langgraph":
-        from cn_curriculum_graph.pipeline.graph import run_pipeline_lg
+    # `--max-concurrency` 只有扇出版接得住：A 阶段是 Node 粒度、层内串行，
+    # 手写版更是逐条同步，两者都没有可以被信号量限制的并发点。静默忽略会让
+    # 使用者以为自己限住了并发——与其建立一个错误预期，不如当场退出（同
+    # `--checkpoint` 的处理原则）。
+    if args.max_concurrency is not None and args.engine != "langgraph-fanout":
+        parser.error("--max-concurrency 仅 --engine langgraph-fanout 支持（另外两个引擎没有扇出点）")
 
+    if args.engine in ("langgraph", "langgraph-fanout"):
         thread_id = args.thread_id or derive_thread_id(args.source, args.out)
-        findings = run_pipeline_lg(
-            args.source, args.out, build_deepseek_deps(models),
-            model_id=models[0], curriculum=args.curriculum,
+        common = dict(
+            model_id=models[0],
+            curriculum=args.curriculum,
             checkpoint_db=args.checkpoint,
             thread_id=thread_id,
         )
+        if args.engine == "langgraph-fanout":
+            findings = fanout_mod.run_pipeline_fanout(
+                args.source, args.out, build_deepseek_deps(models),
+                max_concurrency=args.max_concurrency or fanout_mod.DEFAULT_MAX_CONCURRENT_LLM_CALLS,
+                **common,
+            )
+        else:
+            findings = graph_mod.run_pipeline_lg(
+                args.source, args.out, build_deepseek_deps(models), **common
+            )
     else:
         if args.checkpoint is not None:
-            parser.error("--checkpoint 仅 --engine langgraph 支持（手写版没有重入能力，这正是对比要量的东西）")
+            parser.error("--checkpoint 仅 --engine langgraph/langgraph-fanout 支持（手写版没有重入能力，这正是对比要量的东西）")
         if args.thread_id is not None:
-            parser.error("--thread-id 仅 --engine langgraph 支持")
+            parser.error("--thread-id 仅 --engine langgraph/langgraph-fanout 支持")
         findings = run_pipeline(
             args.source, args.out, build_deepseek_deps(models),
             model_id=models[0], curriculum=args.curriculum,

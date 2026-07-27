@@ -8,9 +8,10 @@
 > 1. 实验用 fake 而非真模型（`scripts/compare_orchestration.py` 的
 >    `_fake_deps`），测不出真实限流行为——真实 429 常伴 `Retry-After` 头、
 >    并发退避、抖动，这些在 fake 实验里完全不存在。
-> 2. 自定义类型（`Chunk`、`TopicDraft`）进 checkpoint 需注册
->    `allowed_msgpack_modules`，本项目至今没有注册，未来版本会强制拦截
->    （见下文"框架强加了什么"第 5 条）。
+> 2. ~~自定义类型（`Chunk`、`TopicDraft`）进 checkpoint 需注册
+>    `allowed_msgpack_modules`，本项目至今没有注册，未来版本会强制拦截。~~
+>    **这条判断已被实测推翻并改写，见"框架强加了什么"第 5 条**——框架自己
+>    会从 state schema 推导 allowlist，真正的坑在别处（而且更隐蔽）。
 > 3. LangGraph 1.2 发布于 2026-05，API 仍在快速变化。本文数据基于
 >    **1.2.9**（`docs/langgraph-comparison-design.md` §2 记录的实测版本）。
 
@@ -198,16 +199,57 @@ delta 天然被吸收掉）——那是更彻底但改动面更大的路线，�
 错"和"这是一次瞬时网络故障，重试可能自愈"。已修复为 `retry_on` 显式排除
 `ValueError`（`graph.py:115` 起），修复后同一测试断言调用次数恢复为 1。
 
-**5. msgpack 自定义类型未注册**：checkpoint 反序列化 `Chunk`/`TopicDraft`
-时走的是兜底路径，实测运行时打印的原文警告：
+**5. msgpack 类型注册：一条被自己推翻的判断（2026-07-27 重做）**
 
-```
-Deserializing unregistered type cn_curriculum_graph.pipeline.models.Chunk from checkpoint. This will be blocked in a future version. Set LANGGRAPH_STRICT_MSGPACK=true to block now, or add to allowed_msgpack_modules to allow explicitly: [('cn_curriculum_graph.pipeline.models', 'Chunk')]
-```
+初版这里写的是："checkpoint 反序列化 `Chunk`/`TopicDraft` 走兜底路径，
+运行时会打印 `Deserializing unregistered type ... This will be blocked in a
+future version`；未来版本收紧后这条路径会直接失效，本项目至今没有注册
+`allowed_msgpack_modules`，是真实存在的技术债。"
 
-`LANGGRAPH_STRICT_MSGPACK=true` 或未来版本默认收紧后，这条路径会直接
-失效——本项目至今没有注册 `allowed_msgpack_modules`，这是真实存在、
-尚未处理的技术债，不是理论风险。
+上量前去还这笔债，把 langgraph 1.2.9 / langgraph-checkpoint 4.1.1 的源码
+和行为都实测了一遍，**三处判断都不成立**：
+
+**① 框架已经替你注册了。** `StateGraph.compile(checkpointer=...)` 会调
+`_serde.build_serde_allowlist(...)` 递归遍历 state schema 的类型标注，收齐
+其中的 pydantic 模型 / dataclass / Enum，再用 `checkpointer.with_allowlist()`
+返回一个带 allowlist 的**克隆**。本项目 11 个自定义类型一个不落。
+**手写一份 allowlist 反而更差**——它会和 state schema 漂移，框架的推导不会。
+
+**② 未注册的后果不是"失效"，是静默把 pydantic 模型降级成 dict。**
+`jsonplus.py` 的 ext hook 在拒绝时走的是 `return tup[2]`——返回该模型的
+kwargs dict，不抛异常、不返回 None。症状会表现为下游某个 Node 上一句
+`AttributeError: 'dict' object has no attribute 'draft_id'`，**看起来完全
+像业务代码的 bug**，排查方向从一开始就是错的。安全加固的失败模式通常是
+"拒绝服务"，这里却是"静默换类型"——这个反直觉点值得单独记住。
+
+**③ 真正的坑在开关的组合上，而且比原来那条判断隐蔽得多。**
+框架那段自动推导整个被 `if _serde.STRICT_MSGPACK_ENABLED:` 包着
+（`graph/state.py:1221`），而这个常量是 import 时从环境变量
+`LANGGRAPH_STRICT_MSGPACK` 读死的。也就是说**"序列化器严不严格"和
+"要不要自动推导 allowlist"是两个独立开关**，组合起来有一格是陷阱：
+
+| serde 基线 | 环境变量 | 结果 |
+|---|---|---|
+| 宽松（框架默认） | 未设 | 能跑，但 `with_allowlist()` 是 no-op，allowlist 从未生效，升级即翻车 |
+| 严格 | 已设 | 能跑，推导生效（这是框架设计的用法） |
+| **严格** | **未设** | **严格拦截照常生效、推导整个跳过 → 全部类型降级成 dict** |
+
+最后这一格正是我们第一版修复踩中的：以为"把 serde 换成严格，compile 会
+自动补 allowlist"，结果续跑当场炸出 `AttributeError`——**比什么都不做更糟**。
+（RED 记录见 `tests/pipeline/test_checkpoint_serde.py::
+test_forgetting_apply_state_allowlist_breaks_resume`。）
+
+**最终修法**：不依赖环境变量，自己调框架那份推导函数并显式
+`with_allowlist`（`graph.py::apply_state_allowlist`），配一个空 allowlist
+基线的严格 serde（`build_checkpoint_serde`）。代价是引入了本项目唯一一处
+langgraph 私有 API 依赖（`langgraph._internal._serde`），已用一条专门的
+测试当绊线，升级时会先红。
+
+**这条对"框架强加了什么"的意义**：它强加的不是"你得手写一份类型清单"，
+而是**"你得搞清楚两个独立开关的四种组合里哪些是陷阱"**——而这件事在
+任何文档里都没写，只能靠读源码 + 实测撞出来。这类隐性认知成本，比代码量
+那 1.65× 更难在选型时被算进去。完整论证见
+`tests/pipeline/test_checkpoint_serde.py` 的模块文档。
 
 **6. 异步传染。** 为让 `NODE_TIMEOUT` 真正生效，四个走 LLM 的 Node 必须
 是 `async def` 且函数体真的 `await asyncio.to_thread(...)`（光有
@@ -354,7 +396,7 @@ fanout（B 阶段，条目级扇出）           N=8 → 墙钟 1.05s，extracto
 ### 这个收益要用什么代价换
 
 第一章"框架强加了什么"的全部 7 条（Node 级重试不可达、`NODE_TIMEOUT`
-不提供墙钟上界、幂等化要求、`retry_on`/`ValueError`、msgpack 未注册、
+不提供墙钟上界、幂等化要求、`retry_on`/`ValueError`、msgpack 开关组合的陷阱、
 异步传染、代码量 1.65×/2.3×）B 阶段一条都没有减免，只是在此之上又多
 引入了 `FanoutState` 子类、`Send` 扇出源为空列表时的兜底路由（已实测
 踩坑：零个 `Send` 任务等价于下游收敛节点完全不触发，`assemble` 跑不到，
@@ -370,7 +412,7 @@ fanout（B 阶段，条目级扇出）           N=8 → 墙钟 1.05s，extracto
 `RetryPolicy` 从不可达（`judge_exception_swallowed` 场景，三个规模下
 `handwritten`/`langgraph`/`fanout` 三个引擎的 `总调用`/`恢复重跑`
 **逐位相同**，没有任何差异）。这种情况下引入 LangGraph 只换来 1.65×
-（或 2.3×，如果还要用断点续跑）的代码量、msgpack 风险、异步传染，
+（或 2.3×，如果还要用断点续跑）的代码量、msgpack 严格模式的开关陷阱、异步传染，
 换不到任何实际收益。
 
 **2. 如果流水线是一串"批处理式"的层（一次函数调用处理一批条目，像本项目

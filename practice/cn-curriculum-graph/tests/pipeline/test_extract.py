@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from cn_curriculum_graph.errors import ToolCallMissingError
 from cn_curriculum_graph.pipeline.extract import (
     EXTRACT_TOOL_NAME,
     DeepSeekExtractor,
@@ -212,6 +213,12 @@ def test_extract_tool_schema_never_exposes_code_owned_fields():
 
 
 def test_deepseek_extractor_raises_when_the_model_skips_the_tool():
+    """异常类型从 `ValueError` 改判为 `ToolCallMissingError`（见
+    `tests/test_error_taxonomy.py` 与 `cn_curriculum_graph/errors.py`）：
+    "模型没按要求调工具"是远端服务的**瞬时**协议违约，不是确定性的值错误，
+    而 `pipeline/graph.py` 的 `retry_on` 把全部 `ValueError` 都排除在重试
+    之外——留在 ValueError 家族里等于永久放弃对这类故障的重试。
+    """
     client = SimpleNamespace(
         messages=SimpleNamespace(
             create=lambda **kw: SimpleNamespace(
@@ -220,5 +227,5 @@ def test_deepseek_extractor_raises_when_the_model_skips_the_tool():
         )
     )
 
-    with pytest.raises(ValueError, match=EXTRACT_TOOL_NAME):
+    with pytest.raises(ToolCallMissingError, match=EXTRACT_TOOL_NAME):
         DeepSeekExtractor(client=client)(_chunk())
