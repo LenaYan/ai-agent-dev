@@ -246,3 +246,45 @@ def test_threshold_range_handles_floating_point_edge_cases():
     from eval_diagnosis import threshold_range
 
     assert threshold_range(0.1, 0.3, 0.05) == [0.1, 0.15, 0.2, 0.25, 0.3]
+
+
+def test_threshold_range_does_not_overshoot_stop_on_half_step_rounding():
+    """round() 相对 int() 新引入的边界行为：比值恰好落在 .5 附近时，
+    Python 的银行家舍入会让点数多算一个，导致末点越过 stop ——
+    (1.05-0.0)/0.3 在浮点里是 3.5000000000000004，round() 到 4，
+    生成的末点是 1.2，超过了用户要求的终点 1.05。"""
+    from eval_diagnosis import threshold_range
+
+    thresholds = threshold_range(0.0, 1.05, 0.3)
+
+    assert thresholds == [0.0, 0.3, 0.6, 0.9]
+    assert all(t <= 1.05 for t in thresholds)
+
+
+# --- 字面基线的扫描区间必须与用户的 --sweep-* 解耦 -----------------------
+
+
+def test_literal_baseline_ignores_any_caller_supplied_range_and_finds_the_true_optimum():
+    """回归钉子：字面基线曾经直接复用调用方（--scorer vector 时用户为
+    余弦定制）的 thresholds。这份数据上 statement 与观察句的相关度是
+    0.833（任何 <=0.833 的阈值都命中），如果用户把 --sweep-from/to 收窄
+    到比如 0.85–0.95（模拟为余弦提高分辨率），字面真正的最优点就落在
+    区间外，基线会被错算成 recall@3=0%，而不是真正能拿到的 100%。
+
+    修法是 literal_baseline 压根不接受外部区间参数，只认自己固定的
+    LITERAL_BASELINE_SWEEP —— 这里验证不管调用方手上还有什么别的窄区间
+    在流转，字面基线自己算出来的都是全区间扫描的真正最优点。"""
+    from eval_diagnosis import literal_baseline
+
+    from cn_curriculum_graph.models import Misconception
+    from conftest import graph, topic
+
+    g = graph(topics=[topic("A", misconceptions=[
+        Misconception(statement="1/8 比 1/5 大", probe="哪个大？", correction_hint="份数越多每份越小"),
+    ])])
+    cases = [{"id": "c1", "observation": "孩子坚持八分之一比五分之一还要大", "expected_topic_ids": ["A"]}]
+
+    best = literal_baseline(g, cases)
+
+    assert best is not None
+    assert best.recall_at_3 == 1.0

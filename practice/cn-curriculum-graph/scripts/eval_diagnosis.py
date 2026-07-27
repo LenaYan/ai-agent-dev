@@ -151,16 +151,56 @@ def same_operating_point(frontier, *, empty_accuracy: float = 1.0) -> FrontierPo
 
 
 def threshold_range(start: float, stop: float, step: float) -> list[float]:
-    """生成 `[start, stop]` 闭区间内、步长 `step` 的阈值列表（含两端）。
+    """生成 `[start, stop]` 区间内、步长 `step` 的阈值列表。
+
+    起点必含；终点只有在 `(stop - start)` 恰好是 `step` 的整数倍时才会
+    落在列表里——步长除不尽 `stop - start` 时，末点是不超过 `stop` 的
+    最大步进点，不保证等于 `stop`（例如 `threshold_range(0, 1, 0.3)`
+    末点是 0.9，不是 1.0）。
 
     点数按 `round((stop - start) / step)` 计算，而不是 `int(...)`：
     浮点误差会让 `int()` 把本该是整数的点数悄悄截掉一个 —— 默认参数
     `0.05 / 0.95 / 0.05` 下 `(0.95-0.05)/0.05` 在浮点里是
     `17.999999999999996`，`int()` 截成 17，用户显式要求的终点 0.95
     就被静默丢了。`round()` 对这种"差一点点到整数"的浮点误差是安全的。
+
+    反过来，`round()` 在比值恰好卡在 `.5` 附近时会把点数**多算一个**
+    （银行家舍入 + 浮点误差，例如 `(1.05-0.0)/0.3` 是
+    `3.5000000000000004`，`round()` 到 4），生成的末点会**越过** `stop`
+    （1.2 > 1.05）。这里显式过滤掉任何超过 `stop` 的点，宁可少给一个
+    点，也不越界。
     """
     steps = round((stop - start) / step)
-    return [round(start + i * step, 4) for i in range(steps + 1)]
+    points = [round(start + i * step, 4) for i in range(steps + 1)]
+    return [p for p in points if p <= stop + 1e-9]
+
+
+# 字面基线的固定扫描区间，故意不跟随 --sweep-from/--sweep-to/--sweep-step。
+#
+# **为什么必须解耦**：scoring.py 模块文档自己写了"阈值是打分器的性质，
+# 不是检索的性质"——余弦相似度与字面覆盖率的标度完全不同。用户为了在
+# 余弦的有效区间上提高分辨率而收窄 --sweep-*（比如 --sweep-from 0.3
+# --sweep-to 0.8）是完全合理的操作，但字面版真正的最优点（实测 0.15）
+# 可能恰好落在这个收窄区间之外。如果字面基线复用了同一份收窄区间，就会
+# 打印出一个偏低、却"现算、看起来可信"的字面基线——向量版就凭一个被
+# 人为压低的基线"赢"。这和"写死 84%"是同一种自欺，只是从"写死"变成了
+# "算错区间"，更隐蔽，因为数字确实是现算出来的。
+LITERAL_BASELINE_SWEEP: tuple[float, float, float] = (0.05, 0.95, 0.05)
+
+
+def literal_baseline(graph, cases, *, limit: int = 5) -> FrontierPoint | None:
+    """在固定的全区间（`LITERAL_BASELINE_SWEEP`）上现算字面基线的同工作点。
+
+    刻意不接受调用方传入的区间/thresholds 参数——见 `LITERAL_BASELINE_SWEEP`
+    上面的注释：一旦允许调用方喂进自己的（可能是为向量收窄过的）区间，
+    这个函数存在的意义就没了。这只用 `LiteralScorer`，不 import、
+    不调用 `build_embedder`，几秒内跑完，不碰任何可选依赖。
+    """
+    thresholds = threshold_range(*LITERAL_BASELINE_SWEEP)
+    scorer = LiteralScorer()
+    index = GraphIndex(graph, scorer=scorer)
+    frontier = sweep_thresholds(index, cases, scorer, thresholds, limit=limit)
+    return same_operating_point(frontier)
 
 
 def verdict(results: list[CaseResult]) -> int:
@@ -217,20 +257,15 @@ def main() -> int:
         print(f"  阈值 {best.threshold} → recall@3 = {best.recall_at_3:.0%}")
 
         if args.scorer == "vector":
-            # 字面基线现算，不许写死：硬编码的数字会在阈值扫描改动、
-            # groundtruth 增删样本后悄悄过期，且早就被本脚本自己的
-            # --threshold-sweep 实测推翻过一次（见 CHANGELOG/commit）。
-            # 这一趟只用 LiteralScorer，不碰任何可选依赖，几秒内跑完。
-            baseline_index = GraphIndex(index.graph, scorer=LiteralScorer())
-            baseline_frontier = sweep_thresholds(
-                baseline_index, cases, baseline_index.scorer, thresholds, limit=args.limit
-            )
-            baseline_best = same_operating_point(baseline_frontier)
+            # 字面基线现算，不许写死，扫描区间也不许跟着用户的 --sweep-*
+            # 走——固定用 LITERAL_BASELINE_SWEEP（理由见该常量上面的注释）。
+            lo, hi, _ = LITERAL_BASELINE_SWEEP
+            baseline_best = literal_baseline(index.graph, cases, limit=args.limit)
             if baseline_best is None:
-                print("  （字面基线在扫描范围内未达到该工作点，无法对比）")
+                print(f"  （字面基线在全区间扫描（{lo}–{hi}）内未达到该工作点，无法对比）")
             else:
                 print(
-                    f"  （字面基线在同一工作点上：阈值 {baseline_best.threshold} "
+                    f"  （字面基线（全区间扫描 {lo}–{hi}）：阈值 {baseline_best.threshold} "
                     f"→ recall@3 = {baseline_best.recall_at_3:.0%}）"
                 )
 
