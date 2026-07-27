@@ -45,6 +45,22 @@ def test_read_stage_returns_empty_for_missing_file(tmp_path):
     assert io.read_stage(tmp_path / "nope.json", DropRecord) == []
 
 
+def test_append_drops_is_idempotent_for_duplicate_records(tmp_path):
+    """S2：手写版从不需要幂等——它每层只 append 一次，从无重复写入的可能。
+    LangGraph 版靠 checkpoint 重入，同一个 Node 失败后可能被整体重跑，
+    重跑会把这一层的 drops 重新算出来再 append 一次。让 append_drops 按
+    记录全字段（stage, ref, reason, detail）去重，checkpoint 重入才不会
+    把 dropped.json 里的记录复制成两份。"""
+    path = tmp_path / "dropped.json"
+    record = DropRecord(stage="review", ref="a", reason="REVIEW_REJECTED", detail="同一条")
+
+    io.append_drops(path, [record])
+    io.append_drops(path, [record])  # 模拟 checkpoint 重跑同一个 Node，重复算出同一条记录
+
+    loaded = io.read_stage(path, DropRecord)
+    assert len(loaded) == 1, f"重复写入同一条记录应被去重，实际有 {len(loaded)} 条"
+
+
 def test_targeted_edge_round_trips_target_and_inner_edge(tmp_path):
     """补充：brief 未覆盖 TargetedEdge 的落盘。它是 ProposedEdge 的落盘包装 ——
     ProposedEdge 本身不记"这条边指向谁"，一旦写进文件再读回来，

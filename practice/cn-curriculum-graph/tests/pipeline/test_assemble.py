@@ -7,8 +7,9 @@
 
 import pytest
 
+from cn_curriculum_graph.pipeline import io
 from cn_curriculum_graph.pipeline.assemble import assemble, dedupe_edges_by_pair, make_topic_id
-from cn_curriculum_graph.pipeline.models import DraftContent, ProposedEdge, TopicDraft
+from cn_curriculum_graph.pipeline.models import DraftContent, DropRecord, ProposedEdge, TopicDraft
 
 
 def _draft(draft_id: str, name: str, grade: int = 4) -> TopicDraft:
@@ -188,3 +189,31 @@ def test_dedupe_edges_by_pair_leaves_unique_edges_untouched():
 
     assert len(deduped["b"]) == 2
     assert drops == []
+
+
+def test_dedupe_edges_by_pair_three_way_tie_produces_two_distinguishable_drops(tmp_path):
+    """审查者实测发现的问题：同一 (target, prerequisite) 上有 3 条同强度边时，
+    dedupe_edges_by_pair 正确产出 2 条 DropRecord（保留 1 条、丢弃 2 条），
+    但如果这 2 条记录的 (stage, ref, reason, detail) 四元组完全相同，
+    io.append_drops 的全字段去重会把它们误判成"同一条记录被写了两次"，
+    单次调用后 dropped.json 里只剩 1 条——两次真实发生的丢弃被静默合并。
+    这里只调用一次 append_drops，不涉及任何重试或 checkpoint 续跑。
+    """
+    edges = {
+        "b": [
+            ProposedEdge(prerequisite_draft_id="a", strength="soft", reason="第一条理由"),
+            ProposedEdge(prerequisite_draft_id="a", strength="soft", reason="第二条理由"),
+            ProposedEdge(prerequisite_draft_id="a", strength="soft", reason="第三条理由"),
+        ]
+    }
+
+    _, drops = dedupe_edges_by_pair(edges)
+    assert len(drops) == 2  # 3 条边保留 1 条，真实丢弃 2 条
+
+    path = tmp_path / "dropped.json"
+    io.append_drops(path, drops)
+
+    loaded = io.read_stage(path, DropRecord)
+    assert len(loaded) == 2, (
+        f"两次真实丢弃被 append_drops 全字段去重误折叠，dropped.json 里只剩 {len(loaded)} 条"
+    )

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,8 +23,6 @@ from cn_curriculum_graph.pipeline import io
 from cn_curriculum_graph.pipeline import review as review_mod
 from cn_curriculum_graph.pipeline.models import (
     Chunk,
-    DropRecord,
-    ProposedEdge,
     TargetedEdge,
     TopicDraft,
 )
@@ -110,50 +109,25 @@ def run_pipeline(
     io.append_drops(drops_path, draft_review.drops)
     kept_ids = {d.draft_id for d in draft_review.kept}
 
-    # Critical C2 的修复点：上面这个预过滤（目标被淘汰 / 前置被淘汰）曾经是
-    # 一段无留痕的 dict comprehension。讽刺的是 review.py 的 review_edges 为
-    # "目标不在 drafts_by_id" 精心写了 UNKNOWN_REVIEW_TARGET 记账，但正因为
-    # 这里已经先把淘汰目标的边过滤掉了，那条记账路径在真实调用里永远碰不到
-    # ——记账代码写在了走不到的分支上，真正丢边的地方反而一声不吭。
-    # 改成显式循环，两种情况各自留一条 DropRecord，ref 用
-    # "{target}<-{prerequisite}" 定位到具体是哪条边。
-    surviving_edges: dict[str, list[ProposedEdge]] = {}
-    edge_prefilter_drops: list[DropRecord] = []
-    for target, group in proposed.items():
-        if target not in kept_ids:
-            for e in group:
-                edge_prefilter_drops.append(
-                    DropRecord(
-                        stage="review",
-                        ref=f"{target}<-{e.prerequisite_draft_id}",
-                        reason="EDGE_TARGET_REJECTED",
-                        detail=f"目标 draft {target} 被 review 淘汰，指向它的边一并丢弃",
-                    )
-                )
-            continue
-        surviving = []
-        for e in group:
-            if e.prerequisite_draft_id in kept_ids:
-                surviving.append(e)
-            else:
-                edge_prefilter_drops.append(
-                    DropRecord(
-                        stage="review",
-                        ref=f"{target}<-{e.prerequisite_draft_id}",
-                        reason="EDGE_PREREQUISITE_REJECTED",
-                        detail=(
-                            f"前置 draft {e.prerequisite_draft_id} 被 review 淘汰，"
-                            f"边 {target}<-{e.prerequisite_draft_id} 丢弃"
-                        ),
-                    )
-                )
-        surviving_edges[target] = surviving
+    # 边预过滤：逻辑抽进 review.filter_edges_by_kept_drafts，两个编排实现共用，
+    # 避免复制一份后改一处漏一处
+    surviving_edges, edge_prefilter_drops = review_mod.filter_edges_by_kept_drafts(
+        proposed, kept_ids
+    )
     io.append_drops(drops_path, edge_prefilter_drops)
 
     edge_review = review_mod.review_edges(
         {d.draft_id: d for d in draft_review.kept}, surviving_edges, deps.edge_judges
     )
     io.append_drops(drops_path, edge_review.drops)
+
+    # 淘汰会制造孤儿：原本有前置的节点，前置全被淘汰后就静默失去了依赖。
+    # 只记账不丢弃 —— 节点本身没问题，问题在于它的前置没了。
+    io.append_drops(
+        drops_path,
+        review_mod.detect_orphans(draft_review.kept, proposed, edge_review.kept_edges),
+    )
+
     io.write_stage(out_dir / "05-reviewed.json", draft_review.kept)
     io.write_stage(
         out_dir / "review-log.json", draft_review.outcomes + edge_review.outcomes
@@ -176,7 +150,10 @@ def run_pipeline(
     (out_dir / "graph.json").write_text(
         graph.model_dump_json(indent=2, exclude_none=False) + "\n", encoding="utf-8"
     )
-    findings = run_all(graph)
+    # review 层已经用 name judge 跑过名实一致，把它传给 run_all，
+    # 否则最终报告会打印 CONSISTENCY_SKIPPED 说"已跳过"——
+    # 这条留痕机制自己出的岔子，比不留痕更误导人。
+    findings = run_all(graph, judge=deps.name_judges[0] if deps.name_judges else None)
 
     # 空产出兜底：这条检查刻意放在 run_pipeline 而不是校验层。
     # 校验层（validators/coverage.py 等）的职责是"校验一份已有的图"，
@@ -207,6 +184,25 @@ def run_pipeline(
     return findings
 
 
+def derive_thread_id(source: Path, out: Path) -> str:
+    """checkpoint 续跑用的默认 thread_id（S1 修复）。
+
+    CLI 此前从不传 `thread_id`，`run_pipeline_lg` 的默认值是常量
+    `"default"`——这意味着任何两次复用同一个 `--checkpoint` 文件的调用，
+    不论 `--source`/`--out` 是什么，都会落进同一个 thread，被 LangGraph
+    当成"同一次实验的续跑"。下一个任务要跑多组受控实验，只要实验脚本
+    复用一个 checkpoint 路径，各组就会互相污染（参见 graph.py 的
+    `_ensure_consistent_resume`：那是第二道防线，这里是从源头让不同实验
+    天然落进不同 thread，两者互补而非互斥）。
+
+    用 `--source`/`--out` 的绝对路径摘要而非常量：同一实验（相同
+    source/out）重跑会派生出相同 thread_id，断点续跑能力不受影响；
+    不同实验的 thread_id 天然不同，不需要用户自己记得传 --thread-id。
+    """
+    key = f"{Path(source).resolve()}|{Path(out).resolve()}"
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="ccg-generate", description="从课标原文生成知识依赖图"
@@ -219,19 +215,51 @@ def main(argv: list[str] | None = None) -> int:
         default="deepseek-v4-flash,deepseek-v4-pro",
         help="审核投票者，逗号分隔；第一个同时用于抽取与连边",
     )
+    parser.add_argument(
+        "--engine",
+        choices=("handwritten", "langgraph"),
+        default="handwritten",
+        help="编排实现。两者行为对等，langgraph 版额外支持 --checkpoint 断点续跑",
+    )
+    parser.add_argument(
+        "--checkpoint", type=Path, default=None, help="checkpoint 数据库路径（仅 langgraph）"
+    )
+    parser.add_argument(
+        "--thread-id",
+        dest="thread_id",
+        default=None,
+        help=(
+            "checkpoint 续跑用的会话标识（仅 langgraph）；不传则由 --source/--out "
+            "派生出稳定摘要，而不是写死的常量——不同实验天然落进不同 thread，"
+            "同一实验（相同 --source/--out）重跑仍能派生出同一个 thread_id 正常续跑"
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not os.environ.get("DEEPSEEK_API_KEY"):
         parser.error("需要 DEEPSEEK_API_KEY（export 或写进 .env）")
 
     models = [m.strip() for m in args.models.split(",") if m.strip()]
-    findings = run_pipeline(
-        source_dir=args.source,
-        out_dir=args.out,
-        deps=build_deepseek_deps(models),
-        model_id=models[0],
-        curriculum=args.curriculum,
-    )
+
+    if args.engine == "langgraph":
+        from cn_curriculum_graph.pipeline.graph import run_pipeline_lg
+
+        thread_id = args.thread_id or derive_thread_id(args.source, args.out)
+        findings = run_pipeline_lg(
+            args.source, args.out, build_deepseek_deps(models),
+            model_id=models[0], curriculum=args.curriculum,
+            checkpoint_db=args.checkpoint,
+            thread_id=thread_id,
+        )
+    else:
+        if args.checkpoint is not None:
+            parser.error("--checkpoint 仅 --engine langgraph 支持（手写版没有重入能力，这正是对比要量的东西）")
+        if args.thread_id is not None:
+            parser.error("--thread-id 仅 --engine langgraph 支持")
+        findings = run_pipeline(
+            args.source, args.out, build_deepseek_deps(models),
+            model_id=models[0], curriculum=args.curriculum,
+        )
 
     print(format_report(findings))
     return 1 if has_errors(findings) else 0

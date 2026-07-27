@@ -58,6 +58,25 @@ uv run ccg-generate --source data/source --out data/generated
 
 设计与实现依据见 `docs/pipeline-design.md`。
 
+**换成 LangGraph 编排**（同一份六层纯函数，`--checkpoint` 支持断点续跑，
+手写版没有这个能力）：
+
+```bash
+uv run ccg-generate --source data/source --out data/generated \
+  --engine langgraph --checkpoint data/generated/.checkpoint.sqlite
+# 再跑一次同样的命令即可从上次中断处续跑，不重跑已完成的层
+```
+
+两个编排实现的取舍见 `docs/langgraph-vs-handwritten.md`——**代码量多
+1.65×~2.3×、msgpack 类型未注册、Node 级重试对多数真实故障不可达**等
+代价都在里面如实列出，不只是"框架更省事"这一面。
+
+跑受控实验复现这份笔记里的数字（fake 实现，非真实 API，见该脚本文档）：
+
+```bash
+uv run python scripts/compare_orchestration.py --chunks 10   # 三引擎对比：handwritten / langgraph / fanout
+```
+
 把校验层跑在 Marble 的真实数据上（验证规则在规模下有效）：
 
 ```bash
@@ -257,6 +276,11 @@ assessmentPrompt 之间，不在 name 与 description 之间，因此刻意没�
 6. 配 `ANTHROPIC_API_KEY`，把交叉审核换成跨训练谱系双票 ——
    现在是同族（flash + pro），误判高度相关，投两次约等于投一次
 7. MCP server，把图暴露给 agent
+8. ✅ ~~路线图"阶段四·主流框架"：LangGraph 编排对比~~ —— 同一份六层纯函数
+   流水线接出手写版 / LangGraph 版 / LangGraph `Send` 扇出版三种编排实现，
+   受控实验量出断点续跑的真实收益与代价，见 `docs/langgraph-vs-handwritten.md`
+   （核心结论：省的是崩溃点上游的调用量，但代价是 1.65×~2.3× 代码量、
+   Node 级重试对多数真实故障不可达、msgpack 类型注册债、异步传染）
 
 > 法律定性（课标著作权，`docs/feasibility-analysis.md`）只卡"大规模生成 + 对外发布"；
 > 本地自用的流水线跑通不受影响。

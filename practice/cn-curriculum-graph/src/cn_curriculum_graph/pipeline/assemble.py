@@ -57,7 +57,11 @@ def dedupe_edges_by_pair(
                 by_prereq[prereq_id] = edge
                 continue
             if _STRENGTH_RANK[edge.strength] > _STRENGTH_RANK[existing.strength]:
-                # 新出现的更强（hard 胜 soft）—— 替换，丢弃原来那条较弱的
+                # 新出现的更强（hard 胜 soft）—— 替换，丢弃原来那条较弱的。
+                # detail 带上被丢弃那条边自己的 reason：同一 (target, prerequisite)
+                # 上若出现 ≥3 条边，多条 DropRecord 的 (stage, ref, reason, detail)
+                # 四元组不能因此撞车，否则会被 io.append_drops 的全字段去重
+                # 误判成"同一条记录写了两次"，把两次真实丢弃静默合并成一次。
                 drops.append(
                     DropRecord(
                         stage="assemble",
@@ -66,12 +70,14 @@ def dedupe_edges_by_pair(
                         detail=(
                             f"重复边：保留 strength={edge.strength}（更强），"
                             f"丢弃 strength={existing.strength}"
+                            f"（原因：{existing.reason}）"
                         ),
                     )
                 )
                 by_prereq[prereq_id] = edge
             else:
-                # 同强度或原来的更强 —— 保留先出现的，丢弃这条
+                # 同强度或原来的更强 —— 保留先出现的，丢弃这条。
+                # 同上，detail 带上被丢弃这条边自己的 reason 以便与其他丢弃事件区分。
                 drops.append(
                     DropRecord(
                         stage="assemble",
@@ -80,6 +86,7 @@ def dedupe_edges_by_pair(
                         detail=(
                             f"重复边：保留先出现的 strength={existing.strength}，"
                             f"丢弃 strength={edge.strength}"
+                            f"（原因：{edge.reason}）"
                         ),
                     )
                 )

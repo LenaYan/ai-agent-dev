@@ -60,7 +60,31 @@ def test_draft_ids_are_deterministic():
 
     drafts, _ = extract_all([_chunk()], extractor)
 
-    assert [d.draft_id for d in drafts] == ["math#001-0", "math#001-1"]
+    # index 补零到两位（见 test_draft_id_lexical_order_matches_extraction_order_past_nine
+    # 的动机）：math#001-00 / math#001-01，而非未补零的 math#001-0 / math#001-1。
+    assert [d.draft_id for d in drafts] == ["math#001-00", "math#001-01"]
+
+
+def test_draft_id_lexical_order_matches_extraction_order_past_nine():
+    """index 必须补零，否则字典序与抽取序系统性反相关。
+
+    chunk.id 本身补零到三位（f"{stem}#{ordinal:03d}"），但 draft_id 的 index
+    若是裸整数，"...-10" 会因为字符串比较在 "...-2" 之前排序 —— 一旦一条
+    条目抽出 ≥10 个知识点，第 10/11/12 个会稳定地排到第 2 个前面。这不是
+    偶发问题：edges.py 的 candidate_prerequisites 依赖"同年级节点按
+    draft_id 字典序 ≈ 抽取序"来定先后方向，前提一旦失效，方向就系统性地错。
+    """
+
+    def extractor(chunk):
+        return DraftBatch(drafts=[_content(f"第{i}个") for i in range(12)])
+
+    drafts, _ = extract_all([_chunk()], extractor)
+
+    draft_ids = [d.draft_id for d in drafts]
+    assert draft_ids == sorted(draft_ids), (
+        "draft_id 按字典序排序应与抽取顺序一致，"
+        f"实际抽取序={draft_ids}，字典序={sorted(draft_ids)}"
+    )
 
 
 def test_a_failing_chunk_is_dropped_without_stopping_the_batch():
