@@ -221,6 +221,12 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=5, help="每条观察句取回多少候选")
     parser.add_argument("--scorer", choices=("literal", "vector"), default="literal")
     parser.add_argument("--model", default=None, help=f"向量打分器用哪个模型（默认 {DEFAULT_MODEL}）")
+    parser.add_argument(
+        "--min-relevance",
+        type=float,
+        default=None,
+        help="覆盖打分器的默认入选门槛（逐条模式用；扫描模式下被 --sweep-* 接管，无效）",
+    )
     parser.add_argument("--threshold-sweep", action="store_true", help="扫描阈值并打印前沿曲线")
     parser.add_argument("--sweep-from", type=float, default=0.05, help="扫描起点")
     parser.add_argument("--sweep-to", type=float, default=0.95, help="扫描终点")
@@ -233,6 +239,13 @@ def main() -> int:
         scorer = VectorScorer(build_embedder(args.model))
     else:
         scorer = LiteralScorer()
+
+    # 逐条模式默认停在打分器自己的门槛上（字面 0.2、向量 0.5），而扫描报出的
+    # 同工作点分别在 0.15 和 0.7 —— 不给这个开关，"扫描说 89%/79%"与"逐条
+    # 列出的未命中样本"就来自两个不同的工作点，后者解释不了前者。
+    # 扫描模式下不设它：那条路径的阈值由 --sweep-* 逐点接管。
+    if args.min_relevance is not None:
+        scorer.min_relevance = args.min_relevance
 
     started = time.perf_counter()
     index = GraphIndex(load_graph(args.graph), scorer=scorer)

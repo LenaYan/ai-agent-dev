@@ -288,3 +288,44 @@ def test_literal_baseline_ignores_any_caller_supplied_range_and_finds_the_true_o
 
     assert best is not None
     assert best.recall_at_3 == 1.0
+
+
+# --- 逐条模式必须能停在扫描报出的那个工作点上 ---------------------------
+
+
+def test_min_relevance_option_overrides_the_scorer_default(tmp_path, capsys):
+    """`--threshold-sweep` 报出的最优阈值，逐条模式必须也能停在那个点上。
+
+    没有这个开关时，逐条模式恒用打分器的默认阈值（字面 0.2、向量 0.5），
+    而两条路线的同工作点分别在 0.15 和 0.7 —— 于是"扫描说 89%/79%"和
+    "逐条列表列出的未命中样本"来自**两个不同的工作点**，拿后者去解释前者
+    是错的。对比笔记第 4 节整节都建立在这个逐条列表上，所以这个开关是
+    结论可追溯性的一部分，不是便利功能。
+    """
+    import eval_diagnosis
+
+    g = graph(topics=[topic("A", misconceptions=[
+        Misconception(statement="1/8 比 1/5 大", probe="哪个大？", correction_hint="份数越多每份越小"),
+    ])])
+    graph_path = tmp_path / "graph.json"
+    graph_path.write_text(g.model_dump_json(), encoding="utf-8")
+    gt_path = tmp_path / "gt.json"
+    gt_path.write_text(
+        json.dumps({"cases": [
+            {"id": "c1", "observation": "孩子坚持八分之一比五分之一还要大", "expected_topic_ids": ["A"]}
+        ]}),
+        encoding="utf-8",
+    )
+
+    # 这条样本与 statement 的相关度是 0.833（见上一个测试）：阈值 0.2
+    # （LiteralScorer 的默认值）命中，阈值 0.9 筛掉。逐条模式若不认这个
+    # 开关，两次跑出来会是同一个结果。
+    argv = ["eval_diagnosis.py", "--graph", str(graph_path), "--groundtruth", str(gt_path)]
+
+    sys.argv = argv + ["--min-relevance", "0.9"]
+    assert eval_diagnosis.main() == 1
+    assert "recall@3 = 0%" in capsys.readouterr().out
+
+    sys.argv = argv + ["--min-relevance", "0.2"]
+    assert eval_diagnosis.main() == 0
+    assert "recall@3 = 100%" in capsys.readouterr().out

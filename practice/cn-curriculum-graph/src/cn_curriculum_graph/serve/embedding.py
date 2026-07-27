@@ -29,7 +29,7 @@ DEFAULT_MODEL: str = "BAAI/bge-m3"
 _MISSING_DEP = (
     "向量检索需要可选依赖，未安装。装它：\n"
     "    uv sync --extra embed\n"
-    "（约 GB 级下载；默认的 uv sync 不装它，CI 也不装 —— "
+    "（实测 +744M 依赖、首次跑另下 4.3G 模型；默认的 uv sync 不装它，CI 也不装 —— "
     "领域层的单测靠假 embedder 跑，不需要模型。）"
 )
 

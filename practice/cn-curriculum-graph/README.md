@@ -8,7 +8,7 @@
 
 **当前进度：地基 + 生成流水线 + MCP 暴露层已跑通。** schema 定义、CI 校验层、
 六层生成流水线（切分 → 抽取 → 去重 → 连边 → 交叉审核 → 组装）、
-把图暴露给 agent 的 MCP server 均已完成，363 个测试，
+把图暴露给 agent 的 MCP server 均已完成，393 个测试，
 并已接真模型端到端跑通（64 节点 / 31 边）。产出的图数据**不入库**（见下方「许可与来源」）。
 
 > ⚠️ 这个项目的**真正资产是流水线，不是数据集**。
@@ -20,7 +20,7 @@
 
 ```bash
 uv sync
-uv run pytest                        # 363 个测试
+uv run pytest                        # 393 个测试
 uv run ccg-validate data/example-graph.json  # 校验一份图数据（默认跳过语义一致性，留 CONSISTENCY_SKIPPED 警告）
 
 uv run python scripts/export_schema.py   # 重新导出 JSON Schema
@@ -34,7 +34,31 @@ CCG_GRAPH_PATH=/path/to/graph.json uv run ccg-mcp    # 换一份图
 
 # 检索够不够用，由 ground truth 说了算（22 条样本，零 key、零成本）：
 uv run python scripts/eval_diagnosis.py     # recall@1/@3/@5，低于 75% 非零退出
+
+# 完整阈值前沿（recall@3 × 空样本正确率），不只报一个点：
+uv run python scripts/eval_diagnosis.py --threshold-sweep
+uv run python scripts/eval_diagnosis.py --min-relevance 0.15   # 逐条明细停在指定工作点
 ```
+
+**向量检索（可选，实验用）**：把字面打分器换成 bge-m3 的余弦相似度。
+**这是对照路径，不是生产路径** —— MCP server 与默认评测仍走字面检索。
+
+```bash
+uv sync --extra embed                # 装 sentence-transformers（实测 .venv +744M）
+uv run python scripts/eval_diagnosis.py --scorer vector --threshold-sweep
+uv run python scripts/eval_diagnosis.py --scorer vector --model Qwen/Qwen3-Embedding-0.6B  # 换模型是一行
+```
+
+> ⚠️ 首次运行会下模型：`BAAI/bge-m3` **实测落盘 4.3G**（其中一半是
+> `transformers` 5.x 后台从 PR 分支另抓的一份 safetensors），耗时 >10 分钟，
+> 落在 `~/.cache/huggingface/hub`（仓库外）。默认 `uv sync` 不装它，CI 也不装 ——
+> **领域层的测试全靠假 embedder 跑，卸掉模型库后 393 个测试一个不掉。**
+
+**结论：向量没有赢。** 同工作点（空样本正确率 = 100%）上
+**字面 89%（阈值 0.15）vs 向量 79%（阈值 0.7）**，且向量的命中集是字面命中集的
+**真子集**（零个独赢样本）；立项时点名"必须上向量才能救"的三条样本里，
+一条靠调阈值免费修好，另外两条向量和字面一起失手。
+完整前沿、逐条对照、四项代价实测与统计精度限制见 **`docs/rag-vs-literal.md`**。
 
 接进 Claude Code：工作区根目录已带 `.mcp.json`，**重启 Claude Code** 后
 `/mcp` 里应能看到 `cn-curriculum-graph` 与它的六个工具。
@@ -324,7 +348,8 @@ assessmentPrompt 之间，不在 name 与 description 之间，因此刻意没�
 8. ✅ ~~MCP server，把图暴露给 agent~~（2026-07-27，含真实对话验收）：
    `serve/query.py`（六个工具的纯函数领域层，不 import 任何 mcp 符号）+
    `serve/mcp_server.py`（FastMCP 1.28.1 绑定，函数体只转发）+
-   `scripts/eval_diagnosis.py`（22 条 ground truth，recall@3 = 84%）。
+   `scripts/eval_diagnosis.py`（22 条 ground truth，recall@3 = 84% @ 生产阈值 0.2；
+   **同工作点上的真基线是 89% @ 阈值 0.15**，见第 12 条）。
    实测发现见 `docs/mcp-server-design.md` §7，三条与设计预期不同：
    首跑 63% 掉的不是语义理解而是两个实现缺陷（长度惩罚 / 符号与口语的表示层差异）、
    IDF 加权实测更差、以及"选 @3 不选 @1"的理由在当前实现下不成立
@@ -351,6 +376,18 @@ assessmentPrompt 之间，不在 name 与 description 之间，因此刻意没�
    是家长的自然问题，现有六个工具答不了；领域层已有 `dependents_of`，只是没暴露。
    **这条是真跑对话才发现的，设计评审发现不了。** 排在第 10 条之后：
    同一张稀图上，新工具照样大面积返回空。
+12. ✅ ~~路线图"阶段三·RAG"入口：字面匹配 vs 向量检索的受控对比~~
+   （2026-07-27，见 `docs/rag-vs-literal.md`）—— **向量没有赢**。同工作点
+   （空样本正确率 = 100%）上字面 **89%**（阈值 0.15）vs bge-m3 向量 **79%**
+   （阈值 0.7），且向量命中集是字面命中集的**真子集**。代价实测：模型 4.3G、
+   依赖 +744M、建索引 0→10.5s、单次查询 1.6ms→12~30ms。
+   三条附带结论：**(a)** 长期被引用的"字面基线 84%"是错的 —— 那是生产默认
+   阈值 0.2 上的值，同工作点最优在 0.15 = 89%，上一轮"调阈值换不来净收益"
+   那句话被完整前沿证伪；**(b)** 立项时点名"必须上向量才能救"的三条样本，
+   一条靠调阈值免费修好、另外两条向量和字面一起失手 —— **立项理由本身没站住**；
+   **(c)** 10 个百分点在 n=19 上只等于 2 条样本（McNemar p = 0.5，统计上区分
+   不开），所以能说的是"向量没赢 + 代价确定"，**不能**说"字面显著更优"。
+   下一个受控变量若要继续，应是 hybrid（两者失败模式不重合）而非换模型。
 
 > 法律定性（课标著作权，`docs/feasibility-analysis.md`）只卡"大规模生成 + 对外发布"；
 > 本地自用的流水线跑通不受影响。
