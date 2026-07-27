@@ -127,6 +127,7 @@ name = "cn-curriculum-graph"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aiosqlite" },
     { name = "anthropic" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint-sqlite" },
@@ -140,6 +141,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiosqlite", specifier = ">=0.20" },
     { name = "anthropic", specifier = ">=0.69" },
     { name = "langgraph", specifier = ">=1.2.9" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.0" },
