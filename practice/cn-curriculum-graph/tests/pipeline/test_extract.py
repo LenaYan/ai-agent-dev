@@ -229,3 +229,53 @@ def test_deepseek_extractor_raises_when_the_model_skips_the_tool():
 
     with pytest.raises(ToolCallMissingError, match=EXTRACT_TOOL_NAME):
         DeepSeekExtractor(client=client)(_chunk())
+
+
+# --- 空返回要重试：它几乎一定是误判的逃生舱，不是"这条真的没内容" ---------
+#
+# 2026-07-28 实测（docs/pipeline-reproducibility.md）：同一份课标原文跑三次，
+# 28 个 chunk 里 8 个（29%）至少一次颗粒无收，而且每次是不同的几块 ——
+# 整组知识点连同误概念一起消失，是跨运行不可复现的最大单项来源。
+#
+# 逐 chunk 复测：同一个 chunk 连发 5 次，空返回率约 20~40%，**flash 与 pro
+# 没有差别**（pro 在 #004 上还更高：2/5 vs 1/5），所以不是模型能力问题，
+# 是 system prompt 里"如果拆不出任何可教的知识点，返回空列表"这个逃生舱
+# 被误用在明显可教的内容上（#004 是"探索加法和减法的算理与算法"）。
+#
+# **重试为什么不是"逼模型硬凑"**：素材里 28 条全部是实打实的课标条目，
+# 逐条读过，没有一条是拆不出可教知识点的。所以空返回一律是误判。
+# 但仍然设上限、且全空时照常记 NO_DRAFTS —— 万一将来素材里真有空条目，
+# 它还是会被如实记下来，而不是被重试逼出一个编造的知识点。
+
+
+def test_empty_extraction_is_retried_before_being_recorded_as_no_drafts():
+    calls: list[str] = []
+
+    def flaky(chunk):
+        calls.append(chunk.id)
+        # 前两次空手而归，第三次给出内容 —— 实测到的典型形状
+        if len(calls) < 3:
+            return DraftBatch(drafts=[])
+        return DraftBatch(drafts=[_content()])
+
+    drafts, drops = extract_all([_chunk()], flaky)
+
+    assert len(calls) == 3, "空返回应当重试"
+    assert [d.content.name for d in drafts] == ["小数的意义"]
+    assert drops == [], "重试成功后不该留下 NO_DRAFTS"
+
+
+def test_persistently_empty_extraction_still_records_no_drafts_after_retries():
+    """重试有上限：真的全空时照常记账，不能无限重试逼出一个编造的知识点。"""
+    calls: list[str] = []
+
+    def always_empty(chunk):
+        calls.append(chunk.id)
+        return DraftBatch(drafts=[])
+
+    drafts, drops = extract_all([_chunk()], always_empty)
+
+    assert drafts == []
+    assert [d.reason for d in drops] == ["NO_DRAFTS"]
+    assert len(calls) > 1, "至少重试过一次"
+    assert str(len(calls)) in drops[0].detail, "记账要写清试了几次，否则看不出是不是重试过"

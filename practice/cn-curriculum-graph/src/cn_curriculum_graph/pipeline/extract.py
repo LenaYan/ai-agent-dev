@@ -83,33 +83,73 @@ class DeepSeekExtractor:
         raise ToolCallMissingError(f"模型未调用 {EXTRACT_TOOL_NAME} 工具，返回：{response.content!r}")
 
 
+# 空返回的重试次数（总尝试次数 = 1 + 这个数）。
+#
+# **为什么要重试**：2026-07-28 实测（docs/pipeline-reproducibility.md）——
+# 同一份课标原文跑三次，28 个 chunk 里 **8 个（29%）至少一次颗粒无收**，
+# 而且每次是不同的几块。整组知识点连同误概念一起消失，是跨运行不可复现的
+# 最大单项来源，也是评测标签活不过一次重跑的主因之一。
+#
+# 逐 chunk 复测：同一 chunk 连发 5 次，空返回率约 20~40%，而且
+# **flash 与 pro 没有差别**（pro 在 #004 上还更高：2/5 vs 1/5）。所以这不是
+# 模型能力问题，换模型解决不了 —— 是 `_SYSTEM` 里"如果拆不出任何可教的
+# 知识点，返回空列表"这个逃生舱被误用在明显可教的内容上
+# （#004 的原文是"探索加法和减法的算理与算法，会整数加减法"）。
+#
+# **为什么这不是"逼模型硬凑"**：素材里 28 条全部是实打实的课标条目，
+# 逐条读过，没有一条拆不出可教的知识点。所以空返回一律是误判的逃生舱。
+# 但仍然设上限、且全空时照常记 `NO_DRAFTS` —— 万一将来素材里真有空条目
+# （比如章节标题被误切成 chunk），它还是会被如实记下来，而不是被重试
+# 逼出一个编造的知识点。记账里写明试了几次，好让"重试过仍然空"与
+# "一次就空"在 dropped.json 里可区分。
+EMPTY_RETRIES = 2
+
+
 def extract_all(
     chunks: list[Chunk], extractor: Extractor
 ) -> tuple[list[TopicDraft], list[DropRecord]]:
-    """逐 chunk 抽取。单个 chunk 失败不中断整批 —— 记账后继续。"""
+    """逐 chunk 抽取。单个 chunk 失败不中断整批 —— 记账后继续。
+
+    空返回会重试（见 `EMPTY_RETRIES`）；抛异常不重试 —— 那是另一类失败，
+    重试策略该由调用方/编排层决定，这里只负责不让它中断整批。
+    """
     drafts: list[TopicDraft] = []
     drops: list[DropRecord] = []
 
     for chunk in chunks:
-        try:
-            batch = extractor(chunk)
-        except PROGRAMMING_ERRORS:  # 程序 bug，不该伪装成 API 失败，直接冒泡
-            raise
-        except Exception as exc:  # noqa: BLE001 —— 任何失败都只影响这一条
+        batch = None
+        attempts = 0
+        failure: Exception | None = None
+        while attempts <= EMPTY_RETRIES:
+            attempts += 1
+            try:
+                batch = extractor(chunk)
+            except PROGRAMMING_ERRORS:  # 程序 bug，不该伪装成 API 失败，直接冒泡
+                raise
+            except Exception as exc:  # noqa: BLE001 —— 任何失败都只影响这一条
+                failure = exc
+                break
+            if batch.drafts:
+                break
+
+        if failure is not None:
             drops.append(
                 DropRecord(
                     stage="extract",
                     ref=chunk.id,
                     reason="EXTRACT_FAILED",
-                    detail=f"{type(exc).__name__}: {exc}",
+                    detail=f"{type(failure).__name__}: {failure}",
                 )
             )
             continue
 
-        if not batch.drafts:
+        if batch is None or not batch.drafts:
             drops.append(
                 DropRecord(
-                    stage="extract", ref=chunk.id, reason="NO_DRAFTS", detail=chunk.text[:60]
+                    stage="extract",
+                    ref=chunk.id,
+                    reason="NO_DRAFTS",
+                    detail=f"试了 {attempts} 次都是空返回｜{chunk.text[:60]}",
                 )
             )
             continue
