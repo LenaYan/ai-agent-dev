@@ -29,6 +29,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -146,6 +147,23 @@ def sweep_thresholds(index, cases, thresholds, *, limit: int = 5) -> list[Fronti
     return points
 
 
+def stale_expected_ids(
+    cases: Sequence[dict], known_topic_ids: set[str]
+) -> dict[str, list[str]]:
+    """挑出 expected_topic_ids 里图中不存在的 id，按样本 id 归组。
+
+    返回空 dict 表示标签全部有效。**调用方应据此拒绝跑评测**，而不是让这些
+    标签静默算成未命中 —— 那会把一个数据问题伪装成检索质量问题，
+    见 main() 里这道闸的注释。
+    """
+    stale: dict[str, list[str]] = {}
+    for case in cases:
+        missing = [i for i in case["expected_topic_ids"] if i not in known_topic_ids]
+        if missing:
+            stale[case["id"]] = missing
+    return stale
+
+
 def same_operating_point(frontier, *, empty_accuracy: float = 1.0) -> FrontierPoint | None:
     """在"空样本正确率达到给定水平"的点里取召回最高的那个。
 
@@ -258,6 +276,27 @@ def main() -> int:
     warm_seconds = time.perf_counter() - started
 
     cases = load_cases(args.groundtruth)
+
+    # 标签必须还活在图里，否则下面每个百分比都没有意义。**这道闸放在跑之前**：
+    # 2026-07-28 重跑流水线后节点 id 变了（id 是内容哈希），24 个 expected id
+    # 里 12 个失效，评测照跑不误、报出 recall@3 = 37%，还建议"回到 §1 重新论证
+    # 纯检索够不够"——而真相是 19 条计召回样本里 7 条的期望 id 全部失效、
+    # 必然算未命中，recall 上限只有 63%，闸门 75% 结构上不可能通过。
+    # 本项目第三次撞上"度量缺陷冒充模型问题"，这次把它挡在跑之前。
+    stale = stale_expected_ids(cases, {t.id for t in index.graph.topics})
+    if stale:
+        print("✗ ground truth 里有 expected_topic_ids 在图里不存在，评测拒绝运行。")
+        print("  这些标签会被算成「永远召不回」，让症状看起来像检索变差 ——")
+        print("  在修好之前，下面任何 recall 数字都不能当成检索质量。\n")
+        for case_id, ids in stale.items():
+            print(f"    {case_id}: {', '.join(ids)}")
+        print(
+            f"\n  共 {len(stale)} 条样本受影响。"
+            "重跑过流水线的话，节点 id 会变（id 是内容哈希），"
+            "需要按节点**名称**重挂标签；名称也对不上的说明节点被重新切分了，"
+            "那条样本要重新判断该挂到哪个新节点。"
+        )
+        return 2
 
     if args.threshold_sweep:
         thresholds = threshold_range(args.sweep_from, args.sweep_to, args.sweep_step)

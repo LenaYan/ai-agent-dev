@@ -363,3 +363,39 @@ def test_min_relevance_option_overrides_the_scorer_default(tmp_path, capsys):
     sys.argv = argv + ["--min-relevance", "0.2"]
     assert eval_diagnosis.main() == 0
     assert "recall@3 = 100%" in capsys.readouterr().out
+
+
+# --- ground truth 的 id 必须还活在图里 -------------------------------------
+
+
+def test_stale_expected_ids_are_reported_instead_of_counted_as_misses():
+    """标签指向图里不存在的节点时，必须报出来，不能算成"未命中"。
+
+    2026-07-28 踩到的真事：重跑流水线后节点 id 变了（id 是内容哈希，描述一改
+    就变），24 个 expected id 里 12 个失效。评测照跑不误，报出 recall@3 = 37%
+    并建议"回到 §1 重新论证纯检索够不够" —— 而真相是 19 条计召回样本里 7 条的
+    期望 id 全部失效、必然算未命中，**recall 上限只有 63%，闸门 75% 结构上
+    不可能通过**。这与检索质量毫无关系。
+
+    这是本项目第三次撞上"度量缺陷冒充模型问题"。前两次是长度惩罚（recall 63%）
+    和空样本分母只有 3。所以这一条不是防御性编程，是把踩过的坑钉死。
+    """
+    from eval_diagnosis import stale_expected_ids
+
+    cases = [
+        {"id": "c1", "observation": "甲", "expected_topic_ids": ["alive", "dead1"]},
+        {"id": "c2", "observation": "乙", "expected_topic_ids": []},
+        {"id": "c3", "observation": "丙", "expected_topic_ids": ["dead2"]},
+    ]
+
+    stale = stale_expected_ids(cases, {"alive", "other"})
+
+    assert stale == {"c1": ["dead1"], "c3": ["dead2"]}
+
+
+def test_no_stale_ids_reports_nothing():
+    from eval_diagnosis import stale_expected_ids
+
+    cases = [{"id": "c1", "observation": "甲", "expected_topic_ids": ["alive"]}]
+
+    assert stale_expected_ids(cases, {"alive"}) == {}
