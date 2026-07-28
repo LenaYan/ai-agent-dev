@@ -28,6 +28,7 @@ from cn_curriculum_graph.pipeline.models import (
 )
 from cn_curriculum_graph.runner import has_errors, run_all
 from cn_curriculum_graph.validators.base import Finding, Severity
+from cn_curriculum_graph.pipeline.topic_registry import TopicRegistry
 
 DEFAULT_CURRICULUM = "cn-moe-math-2022"
 STAGES = ("chunk", "extract", "dedupe", "edges", "review", "assemble")
@@ -56,6 +57,17 @@ def build_deepseek_deps(models: list[str]) -> PipelineDeps:
         name_judges=[DeepSeekJudge(model=m) for m in models],
         edge_judges=[review_mod.DeepSeekEdgeJudge(model=m) for m in models],
     )
+
+
+
+def registry_path_for(out_dir: Path) -> Path:
+    """注册表放在 out_dir 的**上一级**（约定俗成的 data/），不是 out_dir 里面。
+
+    out_dir 默认是 data/generated/，而那个目录被 gitignore —— 注册表放进去
+    就不会入库，换台机器立刻退回"每次重跑 id 全变"。见 run_pipeline 里
+    那段注释与 ADR-0005。
+    """
+    return out_dir.parent / "topic-registry.json"
 
 
 def run_pipeline(
@@ -144,9 +156,23 @@ def run_pipeline(
     io.append_drops(drops_path, duplicate_edge_drops)
 
     # 6 assemble + 校验
+    #
+    # 注册表让节点身份活过重跑：同义改写（"计数单位的感悟"→"计数单位"）不再
+    # 换 id。它是**运行之外的持久状态** —— 图因此不再是源的纯函数，性质变成
+    # 「同一份源 + 同一份注册表 → 同一张图」。所以它必须入库（默认落在
+    # data/topic-registry.json，与 data/generated/ 不同，那个目录是 gitignore 的）：
+    # 按 ADR-0005，这个工作区两台机器交替开发、Git 是唯一同步通道，
+    # 不入库的状态等于不存在。取舍与实测见 pipeline/topic_registry.py 模块文档。
+    registry_path = registry_path_for(out_dir)
+    registry = TopicRegistry.load(registry_path)
     graph = assemble_mod.assemble(
-        draft_review.kept, deduped_edges, model_id=model_id, curriculum=curriculum
+        draft_review.kept,
+        deduped_edges,
+        model_id=model_id,
+        curriculum=curriculum,
+        registry=registry,
     )
+    registry.save(registry_path)
     (out_dir / "graph.json").write_text(
         graph.model_dump_json(indent=2, exclude_none=False) + "\n", encoding="utf-8"
     )

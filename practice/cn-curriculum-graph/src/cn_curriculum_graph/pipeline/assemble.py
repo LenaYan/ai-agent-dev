@@ -16,6 +16,7 @@ from cn_curriculum_graph.models import (
     Topic,
 )
 from cn_curriculum_graph.pipeline.models import DraftContent, DropRecord, ProposedEdge, TopicDraft
+from cn_curriculum_graph.pipeline.topic_registry import TopicRegistry, assign_topic_ids
 
 _STRENGTH_RANK = {"soft": 0, "hard": 1}
 
@@ -109,19 +110,26 @@ def assemble(
     edges: dict[str, list[ProposedEdge]],
     model_id: str,
     curriculum: str,
+    registry: TopicRegistry | None = None,
 ) -> CurriculumGraph:
     """组装成对外 schema。假定调用方（Task 8 编排层）已保证 edges 只引用
     drafts 里仍存活的 id —— review_edges 之前会先用 kept_ids 过滤一轮，
     review_edges 本身只会再收窄，不会新增引用。若这个前置条件被违反，
     说明调用方状态不同步，直接报错而非静默丢边（见下方两处检查）。
     """
+    # 传了注册表就走"认领"路径（同义改写不换身份，见 topic_registry 模块文档）；
+    # 不传就退回原来的纯哈希 —— 大量既有测试不关心身份稳定性，不该为此都改一遍。
+    if registry is not None:
+        assigned_ids = assign_topic_ids([d.content for d in drafts], registry)
+    else:
+        assigned_ids = [make_topic_id(d.content) for d in drafts]
+
     topic_id_by_draft: dict[str, str] = {}
     # 碰撞检查专用集合：用 set 做 O(1) 成员测试，而不是每次现算
     # `dict.values()`（O(n) 线性扫描）—— 原实现在 n 个 draft 上是 O(n²)。
     seen_topic_ids: set[str] = set()
     topics: list[Topic] = []
-    for draft in drafts:
-        topic_id = make_topic_id(draft.content)
+    for draft, topic_id in zip(drafts, assigned_ids, strict=True):
         if topic_id in seen_topic_ids:
             raise ValueError(
                 f"id 碰撞：{topic_id}（{draft.content.name}）—— "
