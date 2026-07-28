@@ -24,7 +24,7 @@ def _deps_with_counting_extractor():
         edge_proposer=lambda t, c: None,
         fidelity_judges=[lambda d: None],
         name_judges=[lambda name, description: None],
-        edge_judges=[lambda t, e: None],
+        edge_judges=[lambda t, p, e: None],
     )
 
 
@@ -81,7 +81,7 @@ def _deps_with_two_fidelity_judges():
         edge_proposer=lambda t, c: None,
         fidelity_judges=[lambda d: "judge_a", lambda d: "judge_b"],
         name_judges=[lambda name, description: None],
-        edge_judges=[lambda t, e: None],
+        edge_judges=[lambda t, p, e: None],
     )
 
 

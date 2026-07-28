@@ -242,7 +242,7 @@ def _name_judge_factory(i: int):
 
 
 def _edge_judge_factory(i: int):
-    def judge(target, edge):
+    def judge(target, prerequisite, edge):
         return Vote(reviewer=f"fake-edge-{i}", approved=True, reason="ok")
 
     return judge

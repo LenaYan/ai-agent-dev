@@ -115,6 +115,7 @@ def test_tool_call_missing_is_retryable_but_config_errors_are_not():
         pytest.param(
             lambda c: DeepSeekEdgeJudge(client=c)(
                 _draft(),
+                _draft("d0"),
                 ProposedEdge(prerequisite_draft_id="d0", strength="hard", reason="理由"),
             ),
             id="review-edge",

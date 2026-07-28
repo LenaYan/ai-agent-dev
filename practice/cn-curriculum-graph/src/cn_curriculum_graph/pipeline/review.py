@@ -114,7 +114,22 @@ class FidelityJudge(Protocol):
 
 
 class EdgeJudge(Protocol):
-    def __call__(self, target: TopicDraft, edge: ProposedEdge) -> Vote: ...
+    """判断"prerequisite 是不是 target 的前置"。
+
+    **`prerequisite` 是 draft 本身而不是 id，这一点是被实测逼出来的**
+    （2026-07-28）：早先只传 `edge.prerequisite_draft_id` 那个不透明字符串，
+    等于让模型判断 A 是不是 B 的前置、却只告诉它 B 是什么。后果不是判得差，
+    是判不了 —— deepseek-v4-flash 在这个任务上通过率塌到 12%（它在 topic 的
+    fidelity 上是 99%），65% 的否决理由是"未提供该知识点的具体名称和内容，
+    无法判断"；而 deepseek-v4-pro 还能表态，是因为它从 `edge.reason` 里反推
+    前置是谁 —— **拿待验证的说法去认定待验证的对象**。规则是分歧即淘汰，
+    于是 flash 一个人把边存活率钉死在 12%（31/269）。诊断详情见
+    docs/edge-review-input-bug.md。
+    """
+
+    def __call__(
+        self, target: TopicDraft, prerequisite: TopicDraft, edge: ProposedEdge
+    ) -> Vote: ...
 
 
 class ReviewResult(BaseModel):
@@ -244,10 +259,14 @@ class DeepSeekEdgeJudge(_DeepSeekVoter):
     def __init__(self, client: Any | None = None, model: str = DEFAULT_MODEL) -> None:
         super().__init__(EDGE_REVIEW_TOOL_NAME, _EDGE_SYSTEM, client, model)
 
-    def __call__(self, target: TopicDraft, edge: ProposedEdge) -> Vote:
+    def __call__(
+        self, target: TopicDraft, prerequisite: TopicDraft, edge: ProposedEdge
+    ) -> Vote:
+        # 两端都给 name + description。只给前置的 id 会让判定器无从核实，
+        # 见 EdgeJudge 协议的 docstring —— 那是一次实测出来的输入缺失 bug。
         return self._vote(
             f"目标知识点：{target.content.name} —— {target.content.description}\n"
-            f"前置知识点 id：{edge.prerequisite_draft_id}\n"
+            f"前置知识点：{prerequisite.content.name} —— {prerequisite.content.description}\n"
             f"强度：{edge.strength}\n"
             f"声称的理由：{edge.reason}"
         )
@@ -444,7 +463,7 @@ def review_edges(
     drops: list[DropRecord] = []
 
     # 1) 按原顺序摊平成任务列表；unknown target 在这一步就地记账，不进任务列表
-    tasks: list[tuple[str, TopicDraft, ProposedEdge]] = []
+    tasks: list[tuple[str, TopicDraft, TopicDraft, ProposedEdge]] = []
     for target_id, proposed in edges.items():
         target = drafts_by_id.get(target_id)
         if target is None:
@@ -461,18 +480,40 @@ def review_edges(
             )
             continue
         kept_edges[target_id] = []
-        tasks.extend((target_id, target, edge) for edge in proposed)
+        for edge in proposed:
+            # 前置也要能查到 —— 判定器现在收的是 draft 本身而不是 id。
+            # 正常流程里 filter_edges_by_kept_drafts 已剔掉前置被淘汰的边，
+            # 走到这里说明 drafts_by_id 与 edges 不同步（该函数 docstring
+            # 写明的前提）。与 target 缺失同样处理：留痕跳过，不 KeyError。
+            prerequisite = drafts_by_id.get(edge.prerequisite_draft_id)
+            if prerequisite is None:
+                drops.append(
+                    DropRecord(
+                        stage="review",
+                        ref=f"{target_id}<-{edge.prerequisite_draft_id}",
+                        reason="UNKNOWN_EDGE_PREREQUISITE",
+                        detail=(
+                            f"前置 draft {edge.prerequisite_draft_id} 不在 drafts_by_id 中"
+                            f"（可能已被上游淘汰），跳过边 "
+                            f"{target_id}<-{edge.prerequisite_draft_id}"
+                        ),
+                    )
+                )
+                continue
+            tasks.append((target_id, target, prerequisite, edge))
 
-    def judge_one(task: tuple[str, TopicDraft, ProposedEdge]) -> list[Vote] | BaseException:
+    def judge_one(
+        task: tuple[str, TopicDraft, TopicDraft, ProposedEdge],
+    ) -> list[Vote] | BaseException:
         """在工作线程里跑完一条边的全部判定。
 
         异常**就地捕获后作为返回值带回**，不让它穿透 `executor.map` ——
         `map` 是惰性的，一旦某个任务抛出，它之后的结果就取不到了，
         "单条边失败不中断整批"会在并发路径上悄悄失效。分类留给主线程。
         """
-        _, target, edge = task
+        _, target, prerequisite, edge = task
         try:
-            return [judge(target, edge) for judge in edge_judges]
+            return [judge(target, prerequisite, edge) for judge in edge_judges]
         except BaseException as exc:  # noqa: BLE001 —— 分类在主线程做，见上
             return exc
 
@@ -484,7 +525,7 @@ def review_edges(
         results = []
 
     # 2) 顺序组装 —— 这一段完全同步，与串行版逐行等价
-    for (target_id, _target, edge), result in zip(tasks, results, strict=True):
+    for (target_id, _target, _prereq, edge), result in zip(tasks, results, strict=True):
         pair_ref = f"{target_id}<-{edge.prerequisite_draft_id}"
         if isinstance(result, BaseException):
             if isinstance(result, PROGRAMMING_ERRORS):

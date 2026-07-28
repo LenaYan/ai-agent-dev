@@ -84,7 +84,7 @@ def _fake_deps() -> PipelineDeps:
         edge_proposer=proposer,
         fidelity_judges=[lambda d: FidelityVerdict(reason="ok", judgment="faithful", reviewer="fake")],
         name_judges=[lambda name, description: Verdict(judgment="consistent")],
-        edge_judges=[lambda t, e: Vote(reviewer="fake", approved=True, reason="ok")],
+        edge_judges=[lambda t, p, e: Vote(reviewer="fake", approved=True, reason="ok")],
     )
 
 
@@ -506,7 +506,7 @@ def test_conservation_invariant_holds_across_a_mixed_scenario(tmp_path, engine):
         edge_proposer=proposer,
         fidelity_judges=[fidelity],
         name_judges=[lambda name, description: Verdict(judgment="consistent")],
-        edge_judges=[lambda t, e: Vote(reviewer="fake", approved=True, reason="ok")],
+        edge_judges=[lambda t, p, e: Vote(reviewer="fake", approved=True, reason="ok")],
     )
 
     _run(engine, source.parent, out, deps, model_id="fake", curriculum="c")

@@ -18,6 +18,8 @@ from cn_curriculum_graph.pipeline.review import (
     FidelityJudgment,
     FidelityVerdict,
     FIDELITY_TOOL_NAME,
+    EDGE_REVIEW_TOOL_NAME,
+    DeepSeekEdgeJudge,
     DeepSeekFidelityJudge,
     detect_orphans,
     filter_edges_by_kept_drafts,
@@ -127,7 +129,7 @@ def test_every_decision_is_recorded_even_when_approved():
 
 
 def test_edges_are_reviewed_and_rejected_ones_dropped():
-    def approve(target, edge):
+    def approve(target, prerequisite, edge):
         return Vote(reviewer="甲", approved=edge.prerequisite_draft_id == "good", reason="测试")
 
     edges = {
@@ -137,7 +139,11 @@ def test_edges_are_reviewed_and_rejected_ones_dropped():
         ]
     }
 
-    result = review_edges({"a": _draft("a")}, edges, edge_judges=[approve])
+    result = review_edges(
+        {"a": _draft("a"), "good": _draft("good"), "bad": _draft("bad")},
+        edges,
+        edge_judges=[approve],
+    )
 
     assert [e.prerequisite_draft_id for e in result.kept_edges["a"]] == ["good"]
     assert result.drops[0].reason == "REVIEW_REJECTED"
@@ -191,14 +197,18 @@ def test_name_judge_failure_drops_the_draft_conservatively_without_crashing():
 
 
 def test_edge_judge_failure_drops_the_edge_conservatively_without_crashing():
-    def flaky_edge_judge(target, edge):
+    def flaky_edge_judge(target, prerequisite, edge):
         raise RuntimeError("429")
 
     edges = {
         "a": [ProposedEdge(prerequisite_draft_id="good", strength="hard", reason="站得住")],
     }
 
-    result = review_edges({"a": _draft("a")}, edges, edge_judges=[flaky_edge_judge])
+    result = review_edges(
+        {"a": _draft("a"), "good": _draft("good"), "bad": _draft("bad")},
+        edges,
+        edge_judges=[flaky_edge_judge],
+    )
 
     assert result.kept_edges["a"] == []
     fail_drops = [d for d in result.drops if d.reason == "EDGE_JUDGE_FAILED"]
@@ -228,12 +238,14 @@ def test_review_reraises_programming_errors_instead_of_recording_a_drop():
             [_draft()], fidelity_judges=[_fidelity(True)], name_judges=[buggy_name_judge]
         )
 
-    def buggy_edge_judge(target, edge):
+    def buggy_edge_judge(target, prerequisite, edge):
         raise KeyError("some_key")
 
     edges = {"a": [ProposedEdge(prerequisite_draft_id="good", strength="hard", reason="站得住")]}
     with pytest.raises(KeyError):
-        review_edges({"a": _draft("a")}, edges, edge_judges=[buggy_edge_judge])
+        review_edges(
+            {"a": _draft("a"), "good": _draft("good")}, edges, edge_judges=[buggy_edge_judge]
+        )
 
 
 def test_review_edges_skips_unknown_target_without_crashing():
@@ -248,7 +260,7 @@ def test_review_edges_skips_unknown_target_without_crashing():
     result = review_edges(
         {},
         edges,
-        edge_judges=[lambda target, edge: Vote(reviewer="甲", approved=True, reason="测试")],
+        edge_judges=[lambda target, prerequisite, edge: Vote(reviewer="甲", approved=True, reason="测试")],
     )
 
     assert result.kept_edges == {}
@@ -514,7 +526,7 @@ def test_review_edges_runs_judges_concurrently():
     lock = threading.Lock()
     state = {"now": 0, "peak": 0}
 
-    def slow_judge(target, edge):
+    def slow_judge(target, prerequisite, edge):
         with lock:
             state["now"] += 1
             state["peak"] = max(state["peak"], state["now"])
@@ -530,7 +542,8 @@ def test_review_edges_runs_judges_concurrently():
         ]
     }
 
-    review_edges({"a": _draft("a")}, edges, edge_judges=[slow_judge], max_concurrency=4)
+    drafts = {"a": _draft("a")} | {f"p{i}": _draft(f"p{i}") for i in range(8)}
+    review_edges(drafts, edges, edge_judges=[slow_judge], max_concurrency=4)
 
     assert state["peak"] > 1, "边审核仍是串行的"
     assert state["peak"] <= 4, f"并发上限没生效，峰值 {state['peak']}"
@@ -547,7 +560,7 @@ def test_review_edges_output_is_identical_to_serial_order():
     import random
     import time
 
-    def jittery_judge(target, edge):
+    def jittery_judge(target, prerequisite, edge):
         # 故意让完成顺序与输入顺序无关
         time.sleep(random.uniform(0, 0.02))
         ok = edge.prerequisite_draft_id != "p3"
@@ -560,8 +573,9 @@ def test_review_edges_output_is_identical_to_serial_order():
         ]
     }
 
-    serial = review_edges({"a": _draft("a")}, edges, edge_judges=[jittery_judge], max_concurrency=1)
-    parallel = review_edges({"a": _draft("a")}, edges, edge_judges=[jittery_judge], max_concurrency=6)
+    drafts = {"a": _draft("a")} | {f"p{i}": _draft(f"p{i}") for i in range(6)}
+    serial = review_edges(drafts, edges, edge_judges=[jittery_judge], max_concurrency=1)
+    parallel = review_edges(drafts, edges, edge_judges=[jittery_judge], max_concurrency=6)
 
     assert [e.prerequisite_draft_id for e in parallel.kept_edges["a"]] == [
         e.prerequisite_draft_id for e in serial.kept_edges["a"]
@@ -574,10 +588,97 @@ def test_review_edges_still_reraises_programming_errors_when_concurrent():
     """并发不能把程序 bug 吞成 EDGE_JUDGE_FAILED —— 线程池会把异常包起来，
     必须显式还原成原类型冒泡，否则 PROGRAMMING_ERRORS 那道防线在并发路径上失效。"""
 
-    def buggy(target, edge):
+    def buggy(target, prerequisite, edge):
         raise KeyError("some_key")
 
     edges = {"a": [ProposedEdge(prerequisite_draft_id="p", strength="hard", reason="理由")]}
 
     with pytest.raises(KeyError):
-        review_edges({"a": _draft("a")}, edges, edge_judges=[buggy], max_concurrency=4)
+        review_edges(
+            {"a": _draft("a"), "p": _draft("p")}, edges,
+            edge_judges=[buggy], max_concurrency=4,
+        )
+
+
+# --- 边审核必须看得见前置知识点本身，而不只是一个 id -------------------
+#
+# 2026-07-28 诊断出来的 bug：边审核的 prompt 只传了目标的 name+description，
+# 前置只传了 draft_id 这个不透明字符串。也就是让模型判断"A 是不是 B 的前置"，
+# 却只告诉它 B 是什么。实测后果：deepseek-v4-flash 在这个任务上通过率塌到
+# 12%（它在 topic 的 fidelity 上是 99%），65% 的否决理由是"未提供该知识点的
+# 具体名称和内容，无法判断"；而 deepseek-v4-pro 之所以还能表态，是从边自带
+# 的 reason 里反推出前置是谁 —— 用待验证的说法去认定待验证的对象。
+# 规则是"分歧即淘汰"，于是 flash 一个人把边存活率钉死在 12%（31/269）。
+
+
+def test_edge_judge_receives_the_prerequisite_draft_not_just_its_id():
+    """判定器必须拿到前置的 name 与 description。
+
+    只给 id 时模型没法判断先修关系是否成立，只能要么拒绝表态、要么从
+    `edge.reason` 里反推 —— 后者是拿待验证的说法去认定待验证的对象。
+    """
+    seen: list[tuple[str, str]] = []
+
+    def spy(target, prerequisite, edge):
+        seen.append((prerequisite.draft_id, prerequisite.content.name))
+        return Vote(reviewer="甲", approved=True, reason="测试")
+
+    edges = {"a": [ProposedEdge(prerequisite_draft_id="p", strength="hard", reason="理由")]}
+
+    review_edges(
+        {"a": _draft("a"), "p": _draft("p", name="计数单位的感悟")},
+        edges,
+        edge_judges=[spy],
+    )
+
+    assert seen == [("p", "计数单位的感悟")]
+
+
+def test_edge_with_unknown_prerequisite_is_dropped_with_a_record_not_a_crash():
+    """前置查不到时按 target 缺失的同一套路处理：留痕跳过，不 KeyError。
+
+    正常流程里 `filter_edges_by_kept_drafts` 已经剔掉了前置被淘汰的边，
+    所以这条路径不该被走到 —— 但 `drafts_by_id` 与 `edges` 不保证同步是这个
+    函数 docstring 里写明的前提，target 那侧已有 UNKNOWN_REVIEW_TARGET 兜着，
+    前置这侧不能反而崩掉。
+    """
+    edges = {"a": [ProposedEdge(prerequisite_draft_id="missing", strength="hard", reason="理由")]}
+
+    result = review_edges({"a": _draft("a")}, edges, edge_judges=[_never_called])
+
+    assert result.kept_edges["a"] == []
+    assert [d.reason for d in result.drops] == ["UNKNOWN_EDGE_PREREQUISITE"]
+    assert "missing" in result.drops[0].detail
+
+
+def _never_called(target, prerequisite, edge):
+    raise AssertionError("前置查不到时不该调用判定器")
+
+
+def test_deepseek_edge_prompt_carries_the_prerequisite_name_and_description():
+    """钉住真实 prompt 的内容 —— 这个 bug 的现场就在这段字符串里。"""
+    captured: dict[str, str] = {}
+
+    class _FakeClient:
+        class messages:  # noqa: N801
+            @staticmethod
+            def create(**kwargs):
+                captured["prompt"] = kwargs["messages"][0]["content"]
+                return SimpleNamespace(
+                    content=[
+                        SimpleNamespace(
+                            type="tool_use",
+                            name=EDGE_REVIEW_TOOL_NAME,
+                            input={"approved": True, "reason": "ok"},
+                        )
+                    ]
+                )
+
+    DeepSeekEdgeJudge(client=_FakeClient())(
+        _draft("a", name="分数的意义"),
+        _draft("p", name="计数单位的感悟"),
+        ProposedEdge(prerequisite_draft_id="p", strength="hard", reason="理由"),
+    )
+
+    assert "计数单位的感悟" in captured["prompt"]
+    assert "理解小数表示十进制分数" in captured["prompt"]  # 前置的 description
