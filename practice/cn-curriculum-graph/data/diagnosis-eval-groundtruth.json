@@ -1,65 +1,88 @@
 {
-  "_note": "诊断检索的 ground truth：家长/孩子的错误说法 → 应当被 match_misconceptions 召回的知识点 id。expected_topic_ids 为空数组表示**应当召回不到任何东西**（问的是图里根本没有的领域），这类样本单独统计，用来验证检索敢返回空而不是硬凑。observation 一律是家长口吻的**改写**，不抄 misconception statement 原文——抄原文的评测是自欺（见 tests/test_eval_diagnosis.py 里那条防抄检查）。id 全部取自 data/generated/graph.json（2026-07-27 那次 64 节点运行）。",
+  "_note": "诊断检索的 ground truth：家长/孩子的错误说法 → 应当被 match_misconceptions 召回的知识点 id。expected_topic_ids 为空数组表示**应当召回不到任何东西**（问的是图里根本没有的领域），这类样本单独统计，用来验证检索敢返回空而不是硬凑。**2026-07-28 从 3 条补到 11 条**：上一次试改 MIN_RELEVANCE 0.2→0.15 时发现，3 条空样本太少、撑不起阈值决策（评测报 100% 而单测里一条偶然字重叠的样本照样漏了出来）。补充的 8 条按「其他领域 / 完全非数学 / 太笼统」三类先定分类再写，写完才第一次跑分数，刻意不含「领域内但图没覆盖」与「说的是对的」两类——前者标签有争议，后者测的是另一个问题。observation 一律是家长口吻的**改写**，不抄 misconception statement 原文——抄原文的评测是自欺（见 tests/test_eval_diagnosis.py 里那条防抄检查）。id 全部取自 data/generated/graph.json（2026-07-27 那次 64 节点运行）。",
   "_expected_semantics": "expected_topic_ids 多于一个时，命中其中任意一个即算召回成功：诊断的消费端是 LLM，它拿到一条对得上的误概念就能往下推理，不要求把同一族节点全召回。",
   "cases": [
     {
       "id": "dec_trailing_zero",
       "observation": "我家孩子说 0.50 比 0.5 大，因为后面多了一个 0。",
-      "expected_topic_ids": ["t_a05c4749a1"],
+      "expected_topic_ids": [
+        "t_a05c4749a1"
+      ],
       "probes": "近似原句：只把方向调了个个儿，测的是最基本的命中能力"
     },
     {
       "id": "dec_more_digits_bigger",
       "observation": "他觉得小数点后面位数越多，这个数就越大。",
-      "expected_topic_ids": ["t_95829346d7", "t_a05c4749a1"],
+      "expected_topic_ids": [
+        "t_95829346d7",
+        "t_a05c4749a1"
+      ],
       "probes": "同义换词：图里的说法是具体数字（0.3 比 0.03 小），这里是抽象规则"
     },
     {
       "id": "dec_compare_digits",
       "observation": "比 0.45 和 0.405 的时候，他把小数点后面当整数看，说 405 比 45 大所以 0.405 大。",
-      "expected_topic_ids": ["t_95829346d7", "t_a05c4749a1"],
+      "expected_topic_ids": [
+        "t_95829346d7",
+        "t_a05c4749a1"
+      ],
       "probes": "验收对话里的原始问题，换了具体数字"
     },
     {
       "id": "frac_unit_compare",
       "observation": "孩子坚持八分之一比五分之一大，理由是 8 比 5 大。",
-      "expected_topic_ids": ["t_c45b4c385d"],
+      "expected_topic_ids": [
+        "t_c45b4c385d"
+      ],
       "probes": "同一误概念、不同数字：字面匹配在数字变了之后还认不认得出"
     },
     {
       "id": "frac_add_across_bars",
       "observation": "他做分数加法时把上面加上面、下面加下面，二分之一加五分之一算成七分之二。",
-      "expected_topic_ids": ["t_0b449c5333"],
+      "expected_topic_ids": [
+        "t_0b449c5333"
+      ],
       "probes": "跨年级同主题之二（分数四则，G5-6），与 frac_unit_compare（分数的意义，G3-5）成对"
     },
     {
       "id": "place_value_ignored",
       "observation": "孩子觉得数字写在哪一位都无所谓，6 就是 6。",
-      "expected_topic_ids": ["t_87848cd9fa", "t_43c5e02941"],
+      "expected_topic_ids": [
+        "t_87848cd9fa",
+        "t_43c5e02941"
+      ],
       "probes": "同义换词：原句带具体的数（4628），这里没有"
     },
     {
       "id": "compare_only_first_digit",
       "observation": "比两个数大小时他只看第一位数字，说 987 比 1234 大。",
-      "expected_topic_ids": ["t_0c99418298"],
+      "expected_topic_ids": [
+        "t_0c99418298"
+      ],
       "probes": "常见口头描述，与图里「只看最高位」意思相同措辞不同"
     },
     {
       "id": "order_of_operations",
       "observation": "算 20+5×2 的时候他从左往右做，先加后乘得到 50。",
-      "expected_topic_ids": ["t_f816e52eed"],
+      "expected_topic_ids": [
+        "t_f816e52eed"
+      ],
       "probes": "图里的例子是 15+3×4，这里换了数字"
     },
     {
       "id": "subtraction_commutes",
       "observation": "他说减法也能交换，5 减 3 和 3 减 5 一样。",
-      "expected_topic_ids": ["t_39935ffb82"],
+      "expected_topic_ids": [
+        "t_39935ffb82"
+      ],
       "probes": "接近原句，测基本命中"
     },
     {
       "id": "distributive_partial",
       "observation": "算 3×(4+5) 的时候他只乘了括号里第一个数，写成 3×4+5。",
-      "expected_topic_ids": ["t_33443b049e"],
+      "expected_topic_ids": [
+        "t_33443b049e"
+      ],
       "probes": "接近原句"
     },
     {
@@ -77,49 +100,66 @@
     {
       "id": "one_is_prime",
       "observation": "孩子说 1 也是质数，因为 1 只能被 1 和自己整除。",
-      "expected_topic_ids": ["t_e92fc3fc52"],
+      "expected_topic_ids": [
+        "t_e92fc3fc52"
+      ],
       "probes": "接近原句"
     },
     {
       "id": "zero_not_even",
       "observation": "他不承认 0 是偶数，说 0 什么都不是。",
-      "expected_topic_ids": ["t_f365c2fedb"],
+      "expected_topic_ids": [
+        "t_f365c2fedb"
+      ],
       "probes": "硬样本：这条只出现在 correction_hint 里，statement 讲的是个位判定法"
     },
     {
       "id": "multiple_of_three_by_last_digit",
       "observation": "看到 23 他就说是 3 的倍数，因为末位是 3。",
-      "expected_topic_ids": ["t_59ac55db00"],
+      "expected_topic_ids": [
+        "t_59ac55db00"
+      ],
       "probes": "同义换词：图里说「个位」，家长说「末位」"
     },
     {
       "id": "lcm_is_product",
       "observation": "求 4 和 6 的最小公倍数，他直接两个数乘起来写 24。",
-      "expected_topic_ids": ["t_78beb43384"],
+      "expected_topic_ids": [
+        "t_78beb43384"
+      ],
       "probes": "接近原句，数字相同"
     },
     {
       "id": "ratio_is_quotient",
       "observation": "他说 3 比 2 就是 1.5，比和除出来的得数是一回事。",
-      "expected_topic_ids": ["t_40f1cd2652"],
+      "expected_topic_ids": [
+        "t_40f1cd2652"
+      ],
       "probes": "同义换词：图里写成 3:2，家长口语说「3 比 2」"
     },
     {
       "id": "proportional_means_both_grow",
       "observation": "他以为只要一个量变大另一个跟着变大，就叫成正比。",
-      "expected_topic_ids": ["t_ce57d8f4bc"],
+      "expected_topic_ids": [
+        "t_ce57d8f4bc"
+      ],
       "probes": "接近原句"
     },
     {
       "id": "equation_both_sides",
       "observation": "他觉得等式两边加的数不一样也没关系，等号照样成立。",
-      "expected_topic_ids": ["t_dbc4b7f387"],
+      "expected_topic_ids": [
+        "t_dbc4b7f387"
+      ],
       "probes": "同义换词"
     },
     {
       "id": "estimation_is_guessing",
       "observation": "孩子觉得估算就是瞎猜，不用讲方法。",
-      "expected_topic_ids": ["t_dd7850cb38", "t_9b53db307f"],
+      "expected_topic_ids": [
+        "t_dd7850cb38",
+        "t_9b53db307f"
+      ],
       "probes": "同一误概念挂在两个节点上（体会估算的作用 / 估算方法的选择）"
     },
     {
@@ -139,6 +179,54 @@
       "observation": "孩子背古诗老记不住，写作文也不爱动笔。",
       "expected_topic_ids": [],
       "probes": "应当召回空：完全不是数学问题，检索必须敢空手而归"
+    },
+    {
+      "id": "empty_probability_gambler",
+      "observation": "他说抛硬币连着出了三次正面，第四次肯定是反面。",
+      "expected_topic_ids": [],
+      "probes": "应当召回空：统计与概率整个领域不在本图内（图只覆盖数与代数）"
+    },
+    {
+      "id": "empty_bar_chart",
+      "observation": "看条形统计图的时候他只会说哪根柱子最高，读不出具体的数量。",
+      "expected_topic_ids": [],
+      "probes": "应当召回空：统计图表属于统计与概率，不在本图内"
+    },
+    {
+      "id": "empty_protractor",
+      "observation": "他用量角器量角，总把内圈外圈的刻度看混。",
+      "expected_topic_ids": [],
+      "probes": "应当召回空：图形与几何不在本图内"
+    },
+    {
+      "id": "empty_solid_vs_plane",
+      "observation": "他分不清正方体和正方形，说它们是一回事。",
+      "expected_topic_ids": [],
+      "probes": "应当召回空：立体与平面图形属于图形与几何，不在本图内"
+    },
+    {
+      "id": "empty_calendar",
+      "observation": "他记不住一年有几个月，大月小月老是搞错。",
+      "expected_topic_ids": [],
+      "probes": "应当召回空：年月日认读属于综合与实践，不在本图内"
+    },
+    {
+      "id": "empty_homework_habit",
+      "observation": "孩子写作业拖拉，一坐下就要玩橡皮，半小时写不了几个字。",
+      "expected_topic_ids": [],
+      "probes": "应当召回空：学习习惯问题，不是数学误概念。与 not_math_at_all 同类但措辞完全不同"
+    },
+    {
+      "id": "empty_test_anxiety",
+      "observation": "孩子一到考试就紧张，平时会做的题也做错。",
+      "expected_topic_ids": [],
+      "probes": "应当召回空：情绪/应试状态问题，没有可诊断的认知误概念"
+    },
+    {
+      "id": "empty_too_vague",
+      "observation": "孩子数学就是学不好，我也说不上来具体差在哪儿。",
+      "expected_topic_ids": [],
+      "probes": "应当召回空：家长没给出任何具体错误，无从诊断——检索不该硬凑一条来交差"
     }
   ]
 }
