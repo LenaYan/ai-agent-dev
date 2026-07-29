@@ -879,3 +879,83 @@ def test_pipeline_does_not_claim_consistency_was_skipped(tmp_path, engine):
     findings = _run(engine, source, tmp_path / "out", _fake_deps(), model_id="fake", curriculum="c")
 
     assert not any(f.code == "CONSISTENCY_SKIPPED" for f in findings)
+
+
+# --- 稳定 id 注册表的接线（三个引擎都要有） -------------------------------
+#
+# 注册表此前只接在 run.run_pipeline 里，`graph.node_assemble`（两个 LangGraph
+# 引擎共用同一个函数）调 assemble 时没传 registry —— 空注册表首轮认领不到
+# 任何条目，两条路径的 id 恰好相同，所以既有的逐字节对等比对看不见这个差异。
+# 真正的差异在**第二轮**：注册表根本没落盘，同义改写照样换 id。
+# 用真实跑一遍管道来钉死接线，而不是断言"assemble 被传了某个参数"。
+
+
+def _run3(engine: str, source_dir, out_dir, deps, model_id, curriculum):
+    """比 `_run` 多认一个 fanout —— 生产上真正在跑的就是它。"""
+    if engine == "langgraph-fanout":
+        from cn_curriculum_graph.pipeline.graph_fanout import run_pipeline_fanout
+
+        return run_pipeline_fanout(
+            source_dir, out_dir, deps, model_id=model_id, curriculum=curriculum
+        )
+    return _run(engine, source_dir, out_dir, deps, model_id=model_id, curriculum=curriculum)
+
+
+ALL_ENGINES = pytest.mark.parametrize(
+    "engine", ["handwritten", "langgraph", "langgraph-fanout"]
+)
+
+
+def _deps_naming(names: dict[str, str]) -> PipelineDeps:
+    """按条目编号给出指定名称的 deps —— 用来模拟第二轮的同义改写。"""
+    deps = _fake_deps()
+
+    def extractor(chunk):
+        grade = 1 if chunk.standard_code == "3.1.1" else 2
+        return DraftBatch(drafts=[_content(names[chunk.standard_code], grade, chunk.text)])
+
+    deps.extractor = extractor
+    return deps
+
+
+@ALL_ENGINES
+def test_registry_is_persisted_next_to_out_dir(tmp_path, engine):
+    """注册表必须落盘在 out_dir 的上一级（data/generated 是 gitignore 的，
+    放里面等于不入库 → 换台机器立刻退回"每次重跑 id 全变"，见 ADR-0005）。"""
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "m.md").write_text(SOURCE, encoding="utf-8")
+    out = tmp_path / "generated"
+
+    _run3(engine, source, out, _fake_deps(), model_id="fake", curriculum="c")
+
+    registry_file = tmp_path / "topic-registry.json"
+    assert registry_file.exists(), "跑完一轮没有写出 topic-registry.json"
+    graph = json.loads((out / "graph.json").read_text(encoding="utf-8"))
+    entries = json.loads(registry_file.read_text(encoding="utf-8"))["entries"]
+    assert {e["id"] for e in entries} == {t["id"] for t in graph["topics"]}
+
+
+@ALL_ENGINES
+def test_synonymous_rename_keeps_topic_ids_across_reruns(tmp_path, engine):
+    """本轮的真正判据：同义改写（"认识100以内的数"→"认识100以内数"）不该
+    换节点身份。没有注册表时 id = sha1(name|…)，改一个字 id 就变，
+    下游 24 个评测标签一次重跑死一半。"""
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "m.md").write_text(SOURCE, encoding="utf-8")
+    out = tmp_path / "generated"
+
+    first = {"3.1.1": "认识100以内的数", "3.1.2": "100以内加减法"}
+    renamed = {"3.1.1": "认识100以内数", "3.1.2": "100以内的加减法"}
+
+    _run3(engine, source, out, _deps_naming(first), model_id="fake", curriculum="c")
+    ids_before = {t["id"] for t in json.loads((out / "graph.json").read_text("utf-8"))["topics"]}
+
+    _run3(engine, source, out, _deps_naming(renamed), model_id="fake", curriculum="c")
+    graph_after = json.loads((out / "graph.json").read_text("utf-8"))
+
+    assert {t["name"] for t in graph_after["topics"]} == set(renamed.values()), (
+        "第二轮该产出改写后的名称，否则这条测试根本没测到改写"
+    )
+    assert {t["id"] for t in graph_after["topics"]} == ids_before

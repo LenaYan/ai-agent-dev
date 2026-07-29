@@ -69,7 +69,9 @@ from cn_curriculum_graph.pipeline.models import (
     TargetedEdge,
     TopicDraft,
 )
+from cn_curriculum_graph.pipeline import run as run_mod
 from cn_curriculum_graph.pipeline.run import DEFAULT_CURRICULUM, PipelineDeps
+from cn_curriculum_graph.pipeline.topic_registry import TopicRegistry
 from cn_curriculum_graph.runner import run_all
 from cn_curriculum_graph.validators.base import Finding, Severity
 
@@ -546,12 +548,21 @@ def node_assemble(state: PipelineState, runtime) -> dict:
     deduped_edges, dup_drops = assemble_mod.dedupe_edges_by_pair(state["kept_edges"])
     io.append_drops(drops_path, dup_drops)
 
+    # 稳定 id 注册表，与手写版同序同路径（`run.run_pipeline` 里那段注释讲了
+    # 为什么落在 out_dir 的**上一级**）。此前这里没接，两个 LangGraph 引擎
+    # 因此静默退回 `sha1(name)`：空注册表首轮认领不到条目、id 恰好与手写版
+    # 相同，所以逐字节的跨引擎对等比对也看不见——差异要到第二轮才现形
+    # （注册表根本没落盘，同义改写照样换身份）。
+    registry_path = run_mod.registry_path_for(_out(state))
+    registry = TopicRegistry.load(registry_path)
     graph = assemble_mod.assemble(
         state["reviewed"],
         deduped_edges,
         model_id=state["model_id"],
         curriculum=state["curriculum"],
+        registry=registry,
     )
+    registry.save(registry_path)
     (_out(state) / "graph.json").write_text(
         graph.model_dump_json(indent=2, exclude_none=False) + "\n", encoding="utf-8"
     )

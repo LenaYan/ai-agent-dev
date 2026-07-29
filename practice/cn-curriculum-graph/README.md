@@ -8,8 +8,12 @@
 
 **当前进度：地基 + 生成流水线 + MCP 暴露层已跑通。** schema 定义、CI 校验层、
 六层生成流水线（切分 → 抽取 → 去重 → 连边 → 交叉审核 → 组装）、
-把图暴露给 agent 的 MCP server 均已完成，396 个测试，
-并已接真模型端到端跑通（64 节点 / 31 边）。产出的图数据**不入库**（见下方「许可与来源」）。
+把图暴露给 agent 的 MCP server 均已完成，416 个测试，
+并已接真模型端到端跑通。**当前一份（2026-07-29）：78 节点 / 213 边 / 4 个孤立（5%）/
+最长前置链 12 层**，校验 0 error、4 warning。产出的图数据**不入库**（见下方「许可与来源」），
+但**稳定 id 注册表 `data/topic-registry.json` 入库** —— 图不再是源的纯函数，
+性质是「同一份源 **+ 同一份注册表** → 同一张图」，注册表不入库等于每次重跑 id 全变
+（见 `docs/pipeline-reproducibility.md`）。
 
 > ⚠️ 这个项目的**真正资产是流水线，不是数据集**。
 > 数据集的可信度取决于教研专业审核（见 `docs/feasibility-analysis.md` 第二节），
@@ -20,7 +24,7 @@
 
 ```bash
 uv sync
-uv run pytest                        # 396 个测试
+uv run pytest                        # 416 个测试
 uv run ccg-validate data/example-graph.json  # 校验一份图数据（默认跳过语义一致性，留 CONSISTENCY_SKIPPED 警告）
 
 uv run python scripts/export_schema.py   # 重新导出 JSON Schema
@@ -32,7 +36,7 @@ uv run python scripts/export_schema.py   # 重新导出 JSON Schema
 uv run ccg-mcp                       # stdio server，默认读 data/generated/graph.json
 CCG_GRAPH_PATH=/path/to/graph.json uv run ccg-mcp    # 换一份图
 
-# 检索够不够用，由 ground truth 说了算（30 条样本 = 19 计召回 + 11 应当召回不到，零 key、零成本）：
+# 检索够不够用，由 ground truth 说了算（28 条样本 = 17 计召回 + 11 应当召回不到，零 key、零成本）：
 uv run python scripts/eval_diagnosis.py     # recall@1/@3/@5，低于 75% 非零退出
 
 # 完整阈值前沿（recall@3 × 空样本正确率），不只报一个点：
@@ -56,7 +60,7 @@ uv run python scripts/eval_diagnosis.py --scorer vector --model Qwen/Qwen3-Embed
 > ⚠️ 首次运行会下模型：`BAAI/bge-m3` **实测落盘 4.3G**（其中一半是
 > `transformers` 5.x 后台从 PR 分支另抓的一份 safetensors），耗时 >10 分钟，
 > 落在 `~/.cache/huggingface/hub`（仓库外）。默认 `uv sync` 不装它，CI 也不装 ——
-> **领域层的测试全靠假 embedder 跑，卸掉模型库后 396 个测试一个不掉。**
+> **领域层的测试全靠假 embedder 跑，卸掉模型库后 416 个测试一个不掉。**
 
 **结论：向量没有赢。** 同工作点（空样本正确率 = 100%）上
 **字面 79%（阈值 0.25）vs 向量 53%（阈值 0.75）**（2026-07-28 把空样本从
@@ -65,6 +69,13 @@ uv run python scripts/eval_diagnosis.py --scorer vector --model Qwen/Qwen3-Embed
 **而本轮最值钱的不是这两个数**：上一轮那个"同工作点 = 空样本正确率 100%"
 的判据，**分母只有 3** —— 纪律是对的，纪律锚定的指标当时太脆。
 完整前沿、逐条对照、四项代价实测与统计精度限制见 **`docs/rag-vs-literal.md`**。
+
+> ⚠️ **这两个数绑定在 2026-07-27 那张 64 节点图上，换图不复现。** 后续重跑
+> 流水线出的图（07-28 的 66 节点、07-29 的 78 节点）标签都重挂过，字面基线在
+> 同一工作点上分别是 **59%** 与 **65%**。**跨图比 recall 不成立** ——
+> 分母、样本、标签本身都在变；要比就限定到两轮都存在的同一批观察句
+> （见 `docs/pipeline-reproducibility.md` 末节）。向量没赢那个**结论**不受影响：
+> 它是在同一张固定的图上只换打分器做出来的单变量对比。
 
 接进 Claude Code：工作区根目录已带 `.mcp.json`，**重启 Claude Code** 后
 `/mcp` 里应能看到 `cn-curriculum-graph` 与它的六个工具。

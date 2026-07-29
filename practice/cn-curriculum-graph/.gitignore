@@ -10,3 +10,11 @@ data/generated/
 # 说明文件挪到 docs/source-corpus.md —— 放在 data/source/ 里会被 split_source
 # 的 *.md glob 当成语料切一遍（实测产生 17 条 NO_STANDARD_CODE 噪声）。
 data/source/
+
+# ⚠️ data/topic-registry.json 是**刻意入库的例外**，不要顺手加进上面的规则。
+# 它是身份台账不是数据集：只有 id / name / domain / 学段 / aliases / description，
+# 不含 evidence、misconceptions、assessment_prompt、课标编号。按闸门 1 的分档，
+# 它落在"课标条目的要求描述 = 风险低"那一档，不是教材内容。
+# 必须入库的理由见 ADR-0005 与 pipeline/topic_registry.py 模块文档：
+# 图的性质是「同一份源 + 同一份注册表 → 同一张图」，注册表不入库，
+# 换台机器就退回"每次重跑 id 全变"，这个模块等于白写。

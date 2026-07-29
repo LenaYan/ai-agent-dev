@@ -1,0 +1,708 @@
+{
+  "_note": "知识点 id 的稳定锚点。新一轮生成的节点按名称相似度认领这里的 id，认领不到才发新的 —— 让同义改写（'计数单位的感悟'→'计数单位'）不换身份。**这个文件必须入库**：不入库的话换台机器就退回'每次重跑 id 全变'。name 是首次登记的锚点，永不改动；aliases 是历次用过的其他名称，只为复核留痕。阈值的来历与代价见 src/cn_curriculum_graph/pipeline/topic_registry.py 模块文档。",
+  "threshold": 0.6,
+  "entries": [
+    {
+      "id": "t_43c5e02941",
+      "name": "万以内数的意义",
+      "domain": "数与代数",
+      "grade_start": 2,
+      "grade_end": 4,
+      "description": "在实际情境中感悟并理解万以内数的意义，即理解一万以内每个数所表示的实际大小和含义。",
+      "aliases": []
+    },
+    {
+      "id": "t_87848cd9fa",
+      "name": "数位的含义",
+      "domain": "数与代数",
+      "grade_start": 2,
+      "grade_end": 4,
+      "description": "理解十进制中每个数位（个位、十位、百位、千位）所表示的不同计数单位，知道同一个数字在不同数位上表示不同的值。",
+      "aliases": []
+    },
+    {
+      "id": "t_9dc12cef81",
+      "name": "万以内数的大小比较",
+      "domain": "数与代数",
+      "grade_start": 2,
+      "grade_end": 4,
+      "description": "会比较万以内数的大小，掌握从高位到低位逐位比较的方法。",
+      "aliases": []
+    },
+    {
+      "id": "t_5736a6d4c3",
+      "name": "通过数的大小比较感悟相等与不等关系",
+      "domain": "数与代数",
+      "grade_start": 2,
+      "grade_end": 4,
+      "description": "通过比较数的大小，体会相等（＝）和不等（＞、＜）是两种基本的数量关系，理解相等与不等的含义。",
+      "aliases": []
+    },
+    {
+      "id": "t_4d8d898ade",
+      "name": "运算之间的关系",
+      "domain": "数与运算",
+      "grade_start": 2,
+      "grade_end": 4,
+      "description": "感悟加法与减法、乘法与除法之间的互逆关系，以及乘法与加法、除法与减法之间的内在联系。",
+      "aliases": []
+    },
+    {
+      "id": "t_d5f7f30675",
+      "name": "整数加法的算理",
+      "domain": "数与运算",
+      "grade_start": 1,
+      "grade_end": 4,
+      "description": "理解整数加法中相同数位对齐、从个位加起、满十进一的道理。",
+      "aliases": []
+    },
+    {
+      "id": "t_63b1edcf9c",
+      "name": "整数减法的算理",
+      "domain": "数与运算",
+      "grade_start": 1,
+      "grade_end": 4,
+      "description": "理解整数减法中相同数位对齐、从个位减起、不够减时向前一位退一当十的道理。",
+      "aliases": []
+    },
+    {
+      "id": "t_f1a76d0efe",
+      "name": "整数加减法的算法",
+      "domain": "数与运算",
+      "grade_start": 1,
+      "grade_end": 4,
+      "description": "掌握整数加法和减法的竖式计算方法，能正确进行计算。",
+      "aliases": []
+    },
+    {
+      "id": "t_3c166891a1",
+      "name": "整数乘法的算理与算法",
+      "domain": "数与运算",
+      "grade_start": 2,
+      "grade_end": 4,
+      "description": "理解整数乘法的意义（如相同加数求和），掌握乘法竖式的计算步骤与进位规则。",
+      "aliases": []
+    },
+    {
+      "id": "t_61bd454993",
+      "name": "整数除法的算理与算法",
+      "domain": "数与运算",
+      "grade_start": 2,
+      "grade_end": 4,
+      "description": "理解整数除法的意义（平均分与包含除），掌握除法竖式的书写格式与试商方法。",
+      "aliases": []
+    },
+    {
+      "id": "t_a194c75e11",
+      "name": "简单的整数乘除法计算",
+      "domain": "数与运算",
+      "grade_start": 2,
+      "grade_end": 4,
+      "description": "能熟练口算表内乘除法，并能正确计算简单的整数乘除法（如两位数乘一位数、两位数除以一位数）。",
+      "aliases": []
+    },
+    {
+      "id": "t_4c1f0adb6b",
+      "name": "体会数和运算的意义",
+      "domain": "数与运算",
+      "grade_start": 1,
+      "grade_end": 3,
+      "description": "在解决生活情境问题的过程中，体会数和运算的实际意义，理解数学与生活的联系。",
+      "aliases": []
+    },
+    {
+      "id": "t_6a4b42d377",
+      "name": "形成初步的符号意识",
+      "domain": "数与运算",
+      "grade_start": 1,
+      "grade_end": 3,
+      "description": "初步理解数学符号（如数字、运算符号）可以表示现实世界中的数量和关系。",
+      "aliases": []
+    },
+    {
+      "id": "t_09c78cf230",
+      "name": "形成初步的数感",
+      "domain": "数与运算",
+      "grade_start": 1,
+      "grade_end": 3,
+      "description": "能感知数的实际大小、多少和顺序，形成对数量的直觉。",
+      "aliases": []
+    },
+    {
+      "id": "t_c4a3e00530",
+      "name": "形成初步的运算能力",
+      "domain": "数与运算",
+      "grade_start": 1,
+      "grade_end": 3,
+      "description": "能根据生活情境选择合适的运算方式解决问题，并正确进行计算。",
+      "aliases": []
+    },
+    {
+      "id": "t_ffd780c6ac",
+      "name": "运用数和运算解决简单生活问题",
+      "domain": "数与运算",
+      "grade_start": 1,
+      "grade_end": 3,
+      "description": "在简单的生活情境中，运用数和数的运算解决问题，并能解释结果的实际意义。",
+      "aliases": []
+    },
+    {
+      "id": "t_c0ebddeb8f",
+      "name": "用数表达变化规律",
+      "domain": "数与代数",
+      "grade_start": 3,
+      "grade_end": 6,
+      "description": "学生能够从简单情境（如表格、图形、日常现象）中识别变化规律，并用数字（如数列、差值）来描述该规律。",
+      "aliases": []
+    },
+    {
+      "id": "t_281daf08c1",
+      "name": "用符号表达变化规律",
+      "domain": "数与代数",
+      "grade_start": 4,
+      "grade_end": 6,
+      "description": "学生能够从简单情境中识别变化规律，并用符号（如字母、图形标记、关系式）来概括和表达该规律。",
+      "aliases": []
+    },
+    {
+      "id": "t_0e69276ea0",
+      "name": "认识万以上的数",
+      "domain": "数与代数",
+      "grade_start": 4,
+      "grade_end": 5,
+      "description": "在具体情境中认识万以上的数，如十万、百万、千万、亿等，理解这些数的实际意义。",
+      "aliases": []
+    },
+    {
+      "id": "t_aa62973cca",
+      "name": "十进制计数法",
+      "domain": "数与代数",
+      "grade_start": 4,
+      "grade_end": 5,
+      "description": "了解十进制计数法的基本原理：每相邻两个计数单位之间的进率都是10。",
+      "aliases": []
+    },
+    {
+      "id": "t_4a70a843a5",
+      "name": "从未知到已知的转化",
+      "domain": "数与代数",
+      "grade_start": 4,
+      "grade_end": 6,
+      "description": "感悟在多位数的乘除法计算中，将未知问题转化为已知问题来解决的数学思想。",
+      "aliases": []
+    },
+    {
+      "id": "t_f3d8530312",
+      "name": "小数的初步认识",
+      "domain": "数与代数",
+      "grade_start": 3,
+      "grade_end": 4,
+      "description": "在具体情境中初步认识小数，理解小数的含义，能正确读写小数。",
+      "aliases": []
+    },
+    {
+      "id": "t_813dfceca5",
+      "name": "分数的初步认识",
+      "domain": "数与代数",
+      "grade_start": 3,
+      "grade_end": 4,
+      "description": "在具体情境中初步认识分数，理解分数的含义，能正确读写简单的分数。",
+      "aliases": []
+    },
+    {
+      "id": "t_6ae2028e22",
+      "name": "感悟分数单位",
+      "domain": "数与代数",
+      "grade_start": 3,
+      "grade_end": 5,
+      "description": "理解分数单位的概念，知道把单位'1'平均分成若干份，表示其中一份的数就是分数单位。",
+      "aliases": []
+    },
+    {
+      "id": "t_0ea50e8336",
+      "name": "同分母分数加减法",
+      "domain": "数与代数",
+      "grade_start": 3,
+      "grade_end": 5,
+      "description": "掌握同分母分数加减法的计算方法：分母不变，分子相加减。",
+      "aliases": []
+    },
+    {
+      "id": "t_9086026c45",
+      "name": "一位小数加减法",
+      "domain": "数与代数",
+      "grade_start": 3,
+      "grade_end": 4,
+      "description": "掌握一位小数加减法的计算方法：小数点对齐，按整数加减法计算，点上小数点。",
+      "aliases": []
+    },
+    {
+      "id": "t_bf49c20552",
+      "name": "四则运算的意义",
+      "domain": "数与运算",
+      "grade_start": 1,
+      "grade_end": 4,
+      "description": "在解决简单实际问题的过程中，理解加法、减法、乘法和除法各自表示的含义和适用场景。",
+      "aliases": []
+    },
+    {
+      "id": "t_f816e52eed",
+      "name": "整数四则混合运算",
+      "domain": "数与运算",
+      "grade_start": 3,
+      "grade_end": 6,
+      "description": "掌握整数四则混合运算的运算顺序（先乘除后加减，有括号先算括号内），并能正确进行计算。",
+      "aliases": []
+    },
+    {
+      "id": "t_0690a03400",
+      "name": "加法交换律",
+      "domain": "数与代数",
+      "grade_start": 3,
+      "grade_end": 5,
+      "description": "理解加法交换律的含义：两个数相加，交换加数的位置，和不变。",
+      "aliases": []
+    },
+    {
+      "id": "t_43637a269d",
+      "name": "加法结合律",
+      "domain": "数与代数",
+      "grade_start": 3,
+      "grade_end": 5,
+      "description": "理解加法结合律的含义：三个数相加，先把前两个数相加，或者先把后两个数相加，和不变。",
+      "aliases": []
+    },
+    {
+      "id": "t_017ef9b359",
+      "name": "乘法交换律",
+      "domain": "数与代数",
+      "grade_start": 3,
+      "grade_end": 5,
+      "description": "理解乘法交换律的含义：两个数相乘，交换乘数的位置，积不变。",
+      "aliases": []
+    },
+    {
+      "id": "t_0b7776d19b",
+      "name": "乘法结合律",
+      "domain": "数与代数",
+      "grade_start": 3,
+      "grade_end": 5,
+      "description": "理解乘法结合律的含义：三个数相乘，先把前两个数相乘，或者先把后两个数相乘，积不变。",
+      "aliases": []
+    },
+    {
+      "id": "t_ee28d00b2e",
+      "name": "乘法对加法的分配律",
+      "domain": "数与代数",
+      "grade_start": 4,
+      "grade_end": 6,
+      "description": "理解乘法分配律的含义：两个数的和与一个数相乘，可以先把它们分别与这个数相乘，再相加。",
+      "aliases": []
+    },
+    {
+      "id": "t_0fa9fdd258",
+      "name": "用字母表示运算律",
+      "domain": "数与代数",
+      "grade_start": 4,
+      "grade_end": 6,
+      "description": "能用字母（如 a、b、c）表示加法交换律、加法结合律、乘法交换律、乘法结合律和乘法分配律。",
+      "aliases": []
+    },
+    {
+      "id": "t_b819e09592",
+      "name": "用数描述事物特征",
+      "domain": "数与代数",
+      "grade_start": 1,
+      "grade_end": 3,
+      "description": "学会从生活情境中识别事物的数量或顺序特征，并用恰当的数（如整数、小数、分数等）进行描述。",
+      "aliases": []
+    },
+    {
+      "id": "t_5d0418fc12",
+      "name": "数感的形成",
+      "domain": "数与代数",
+      "grade_start": 1,
+      "grade_end": 3,
+      "description": "在具体情境中感受数的实际意义，能对数量进行合理估计，理解数的大小关系和相对大小。",
+      "aliases": []
+    },
+    {
+      "id": "t_a740368613",
+      "name": "运算能力的培养",
+      "domain": "数与代数",
+      "grade_start": 1,
+      "grade_end": 3,
+      "description": "在生活情境中理解加、减、乘、除等运算的实际含义，能根据情境选择合适的运算解决问题。",
+      "aliases": []
+    },
+    {
+      "id": "t_229cda6f18",
+      "name": "初步的推理意识",
+      "domain": "数与代数",
+      "grade_start": 1,
+      "grade_end": 3,
+      "description": "在简单的生活情境中，能根据已知信息进行简单的推理，得出合理的结论。",
+      "aliases": []
+    },
+    {
+      "id": "t_b14bdd5a50",
+      "name": "运用数和数的运算解决实际问题",
+      "domain": "数与运算",
+      "grade_start": 1,
+      "grade_end": 3,
+      "description": "在实际情境中，运用数和数的运算来解决问题，培养应用意识和运算能力。",
+      "aliases": []
+    },
+    {
+      "id": "t_c8640a25d2",
+      "name": "结合具体情境选择合适的单位进行估算",
+      "domain": "数与运算",
+      "grade_start": 1,
+      "grade_end": 3,
+      "description": "在解决实际问题的过程中，能结合具体情境，选择合适的单位（如元、角、分、米、厘米等）进行简单估算。",
+      "aliases": []
+    },
+    {
+      "id": "t_dd7850cb38",
+      "name": "体会估算在生活中的作用",
+      "domain": "数与运算",
+      "grade_start": 1,
+      "grade_end": 3,
+      "description": "通过解决实际问题，感受估算在日常生活中的便利性和实用性，培养估算意识。",
+      "aliases": []
+    },
+    {
+      "id": "t_1f5714b4da",
+      "name": "使用计算器进行基本计算",
+      "domain": "数与运算",
+      "grade_start": 3,
+      "grade_end": 6,
+      "description": "学会正确使用计算器进行加、减、乘、除等基本运算操作。",
+      "aliases": []
+    },
+    {
+      "id": "t_0363a01c65",
+      "name": "用计算器探索简单规律",
+      "domain": "数与运算",
+      "grade_start": 3,
+      "grade_end": 6,
+      "description": "能利用计算器进行重复计算，观察并发现数字运算中的简单规律（如循环小数、乘法表规律等）。",
+      "aliases": []
+    },
+    {
+      "id": "t_170a6479d4",
+      "name": "总量＝分量＋分量",
+      "domain": "数量关系",
+      "grade_start": 2,
+      "grade_end": 4,
+      "description": "在具体情境中认识总量等于分量之和的关系，并能利用该关系解决简单的实际问题。",
+      "aliases": []
+    },
+    {
+      "id": "t_873d5a160e",
+      "name": "总价＝单价×数量",
+      "domain": "数量关系",
+      "grade_start": 3,
+      "grade_end": 5,
+      "description": "在具体情境中认识总价等于单价乘以数量的关系，并能利用该关系解决简单的购物问题。",
+      "aliases": []
+    },
+    {
+      "id": "t_3c1fecabae",
+      "name": "路程＝速度×时间",
+      "domain": "数量关系",
+      "grade_start": 3,
+      "grade_end": 5,
+      "description": "在具体情境中认识路程等于速度乘以时间的关系，并能利用该关系解决简单的行程问题。",
+      "aliases": []
+    },
+    {
+      "id": "t_e833601483",
+      "name": "利用数量关系解决简单的实际问题",
+      "domain": "数量关系",
+      "grade_start": 2,
+      "grade_end": 5,
+      "description": "能识别实际问题中的数量关系，并选择正确的数量关系模型来解决问题。",
+      "aliases": []
+    },
+    {
+      "id": "t_677ae0cc82",
+      "name": "等量的等量相等",
+      "domain": "数与代数",
+      "grade_start": 1,
+      "grade_end": 3,
+      "description": "在具体情境中理解并运用“等量的等量相等”这一基本逻辑关系，即如果a=b且b=c，那么a=c。",
+      "aliases": []
+    },
+    {
+      "id": "t_fdc3ccf91f",
+      "name": "用数学解决生活简单问题并解释结果",
+      "domain": "综合与实践",
+      "grade_start": 1,
+      "grade_end": 4,
+      "description": "能从生活情境中识别数学问题，运用已学知识解决，并对答案的实际含义进行合理解释。",
+      "aliases": []
+    },
+    {
+      "id": "t_c93d25cba0",
+      "name": "探索简单规律",
+      "domain": "综合与实践",
+      "grade_start": 1,
+      "grade_end": 3,
+      "description": "在具体情境中观察、发现简单的重复或变化规律，并用语言或符号表达出来。",
+      "aliases": []
+    },
+    {
+      "id": "t_96f3f0560f",
+      "name": "初步的模型意识",
+      "domain": "综合与实践",
+      "grade_start": 2,
+      "grade_end": 4,
+      "description": "能将生活中的简单问题抽象成数学表达式或图形等模型，初步体会用数学表示现实世界。",
+      "aliases": []
+    },
+    {
+      "id": "t_59ac55db00",
+      "name": "2、3、5的倍数的特征",
+      "domain": "数与代数",
+      "grade_start": 4,
+      "grade_end": 6,
+      "description": "知道2、3、5的倍数的特征，能根据特征判断一个数是否是2、3、5的倍数。",
+      "aliases": []
+    },
+    {
+      "id": "t_78beb43384",
+      "name": "公倍数和最小公倍数",
+      "domain": "数与代数",
+      "grade_start": 5,
+      "grade_end": 6,
+      "description": "了解公倍数和最小公倍数的含义，能找出两个数的公倍数和最小公倍数。",
+      "aliases": []
+    },
+    {
+      "id": "t_e3e2d391c8",
+      "name": "公因数和最大公因数",
+      "domain": "数与代数",
+      "grade_start": 5,
+      "grade_end": 6,
+      "description": "了解公因数和最大公因数的含义，能找出两个数的公因数和最大公因数。",
+      "aliases": []
+    },
+    {
+      "id": "t_f365c2fedb",
+      "name": "奇数与偶数",
+      "domain": "数与代数",
+      "grade_start": 4,
+      "grade_end": 6,
+      "description": "了解奇数和偶数的含义，能正确判断一个数是奇数还是偶数。",
+      "aliases": []
+    },
+    {
+      "id": "t_9942693cd3",
+      "name": "质数与合数",
+      "domain": "数与代数",
+      "grade_start": 5,
+      "grade_end": 6,
+      "description": "了解质数（素数）和合数的含义，能正确判断一个数是质数还是合数。",
+      "aliases": []
+    },
+    {
+      "id": "t_9eade78021",
+      "name": "计数单位的感悟",
+      "domain": "数与代数",
+      "grade_start": 3,
+      "grade_end": 6,
+      "description": "感悟整数、小数、分数中计数单位的一致性，理解数的本质是计数单位的累加。",
+      "aliases": []
+    },
+    {
+      "id": "t_534da836d2",
+      "name": "小数与分数的转化",
+      "domain": "数与代数",
+      "grade_start": 4,
+      "grade_end": 6,
+      "description": "会进行小数和分数之间的相互转化，理解两者之间的等价关系。",
+      "aliases": []
+    },
+    {
+      "id": "t_a05c4749a1",
+      "name": "数感的进一步发展",
+      "domain": "数与代数",
+      "grade_start": 3,
+      "grade_end": 6,
+      "description": "通过小数和分数的学习，进一步发展对数的感知、估计和比较能力。",
+      "aliases": []
+    },
+    {
+      "id": "t_fec45e8f7c",
+      "name": "符号意识的进一步发展",
+      "domain": "数与代数",
+      "grade_start": 3,
+      "grade_end": 6,
+      "description": "通过小数和分数的学习，进一步理解用符号（数字、小数点、分数线等）表示数的意义和规则。",
+      "aliases": []
+    },
+    {
+      "id": "t_13e90b16da",
+      "name": "整数除法与分数的关系",
+      "domain": "数与代数",
+      "grade_start": 3,
+      "grade_end": 5,
+      "description": "在具体情境中，理解整数除法（被除数÷除数）的结果可以用分数（被除数/除数）来表示，即除法与分数之间的等价关系。",
+      "aliases": []
+    },
+    {
+      "id": "t_d4eb49106c",
+      "name": "简单的小数四则运算",
+      "domain": "数与运算",
+      "grade_start": 4,
+      "grade_end": 6,
+      "description": "能正确进行小数的加、减、乘、除运算，理解小数点对齐等算理。",
+      "aliases": []
+    },
+    {
+      "id": "t_dde961a6a3",
+      "name": "简单的分数四则运算",
+      "domain": "数与运算",
+      "grade_start": 4,
+      "grade_end": 6,
+      "description": "能正确进行同分母或异分母分数的加、减、乘、除运算，理解通分、约分等算理。",
+      "aliases": []
+    },
+    {
+      "id": "t_50e9613781",
+      "name": "小数与分数的混合运算",
+      "domain": "数与运算",
+      "grade_start": 5,
+      "grade_end": 6,
+      "description": "能正确进行包含小数和分数的混合运算，理解运算顺序并合理选择统一形式（化小数或化分数）。",
+      "aliases": []
+    },
+    {
+      "id": "t_3b982bf906",
+      "name": "感悟运算的一致性",
+      "domain": "数与运算",
+      "grade_start": 5,
+      "grade_end": 6,
+      "description": "理解整数、小数、分数四则运算在算理上的共通性，如计数单位相加减、乘除互为逆运算等。",
+      "aliases": []
+    },
+    {
+      "id": "t_e2667f2bd7",
+      "name": "发展运算能力",
+      "domain": "数与运算",
+      "grade_start": 4,
+      "grade_end": 6,
+      "description": "能根据运算律和运算性质合理、灵活地选择运算策略，提高计算的正确性和效率。",
+      "aliases": []
+    },
+    {
+      "id": "t_125b1483d5",
+      "name": "发展推理意识",
+      "domain": "数与运算",
+      "grade_start": 4,
+      "grade_end": 6,
+      "description": "在运算过程中能主动思考算理、验证结果，初步形成有条理的推理习惯。",
+      "aliases": []
+    },
+    {
+      "id": "t_dbc4b7f387",
+      "name": "等式的基本性质在具体情境中的理解",
+      "domain": "数与代数",
+      "grade_start": 4,
+      "grade_end": 6,
+      "description": "在具体情境（如天平、数量关系故事）中，理解等式两边同时加上或减去同一个数，等式仍然成立；等式两边同时乘或除以同一个不为0的数，等式仍然成立。",
+      "aliases": []
+    },
+    {
+      "id": "t_b8a36340af",
+      "name": "估算方法的选择",
+      "domain": "数与代数",
+      "grade_start": 3,
+      "grade_end": 6,
+      "description": "在解决实际问题时，能根据问题情境和数据特点，选择适当的估算策略（如凑整、取近似值等）进行估算。",
+      "aliases": []
+    },
+    {
+      "id": "t_40f1cd2652",
+      "name": "比的含义",
+      "domain": "数与代数",
+      "grade_start": 6,
+      "grade_end": 6,
+      "description": "在实际情境中理解比的含义，即两个数量之间的倍数关系。",
+      "aliases": []
+    },
+    {
+      "id": "t_05508b88fa",
+      "name": "按比例分配的含义",
+      "domain": "数与代数",
+      "grade_start": 6,
+      "grade_end": 6,
+      "description": "在实际情境中理解按比例分配的含义，即把一个总量按照给定的比进行分配。",
+      "aliases": []
+    },
+    {
+      "id": "t_ce57d8f4bc",
+      "name": "认识成正比的量",
+      "domain": "数与代数",
+      "grade_start": 6,
+      "grade_end": 6,
+      "description": "在具体情境中理解两个量成正比的含义，即它们的比值（y/x）是一个固定的非零常数。",
+      "aliases": []
+    },
+    {
+      "id": "t_a0c17bf928",
+      "name": "探索正比例关系中的规律与变化趋势",
+      "domain": "数与代数",
+      "grade_start": 6,
+      "grade_end": 6,
+      "description": "在正比例关系（如y=5x）中，探索当一个量变化时另一个量如何随之变化，并能描述其变化规律或趋势。",
+      "aliases": []
+    },
+    {
+      "id": "t_92718868d7",
+      "name": "运用常见数量关系解决实际问题",
+      "domain": "数量关系",
+      "grade_start": 3,
+      "grade_end": 6,
+      "description": "能识别并运用常见的数量关系（如单价×数量=总价、速度×时间=路程等）来解决实际情境中的问题。",
+      "aliases": []
+    },
+    {
+      "id": "t_3a6abbef72",
+      "name": "合理解释结果的实际意义",
+      "domain": "数量关系",
+      "grade_start": 3,
+      "grade_end": 6,
+      "description": "能对计算得出的结果结合具体情境进行解释，判断结果是否合理、是否符合实际。",
+      "aliases": []
+    },
+    {
+      "id": "t_e45869e4cc",
+      "name": "逐步形成模型意识",
+      "domain": "数量关系",
+      "grade_start": 4,
+      "grade_end": 6,
+      "description": "能从具体问题中抽象出一般的数量关系模型（如总价=单价×数量），并意识到这类模型可以解决一类问题。",
+      "aliases": []
+    },
+    {
+      "id": "t_b37074274a",
+      "name": "逐步形成几何直观",
+      "domain": "数量关系",
+      "grade_start": 3,
+      "grade_end": 6,
+      "description": "能借助图形、线段图、示意图等直观方式表示数量关系，帮助理解和解决问题。",
+      "aliases": []
+    },
+    {
+      "id": "t_91229709a5",
+      "name": "提高解决问题的能力",
+      "domain": "数量关系",
+      "grade_start": 3,
+      "grade_end": 6,
+      "description": "能综合运用分析、推理、计算、检验等策略，独立解决较复杂的实际问题。",
+      "aliases": []
+    }
+  ]
+}
