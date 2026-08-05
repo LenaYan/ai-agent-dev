@@ -141,6 +141,14 @@ uv run ccg-generate --source data/source --out data/generated \
 uv run python scripts/compare_orchestration.py --chunks 10   # 三引擎对比：handwritten / langgraph / fanout
 ```
 
+比两轮生成的图 —— 身份稳不稳、**误概念内容还在不在**（两个问题一次问完，
+因为跑一轮是 ~1000 次调用 / 11 分钟；设计与局限见
+`docs/pipeline-reproducibility.md` 末节）：
+
+```bash
+uv run python scripts/compare_runs.py 上一轮/graph.json 这一轮/graph.json
+```
+
 把校验层跑在 Marble 的真实数据上（验证规则在规模下有效）：
 
 ```bash
