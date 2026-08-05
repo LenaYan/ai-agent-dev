@@ -218,20 +218,45 @@ class VectorScorer:
         self.min_relevance = min_relevance
         self.encode_calls = 0
 
+    @staticmethod
+    def _key(text: str) -> str:
+        """缓存键 = 去掉首尾空白的文本。
+
+        **key 和送去 encode 的文本必须是同一个字符串。** 这是这个方法存在的
+        全部意义：只 strip key、却把原文送去 encode，会让同一个 key 对应两个
+        不同的向量（取决于谁先进缓存），比不 strip **更糟** —— 那是一个静默
+        的错误结果，而不 strip 只是多编码一次。
+
+        **为什么修**：`"甲"` 与 `" 甲 "` 原本各占一条缓存、各编码一次。对
+        2026-07-27 那轮受控对比的结论零影响（两条路线看到的是同一份文本），
+        纯属浪费。
+
+        **为什么必须在轮间改**：strip 会让分数发生微小变化（送进模型的文本
+        变了），等于动了实验条件。轮中改动会让"改了 X 之后指标变化 Y"再次
+        说不清 —— 这个项目已经为这件事付过一次代价
+        （见 `docs/pipeline-reproducibility.md`）。
+        """
+        return text.strip()
+
     def warm(self, texts: Sequence[str]) -> None:
-        pending = [t for t in dict.fromkeys(texts) if t.strip() and t not in self._cache]
+        pending = [
+            k for k in dict.fromkeys(self._key(t) for t in texts) if k and k not in self._cache
+        ]
         if pending:
             self._encode_into_cache(pending)
 
     def relevance(self, query: str, target: str) -> float:
-        if not query.strip() or not target.strip():
+        q, t = self._key(query), self._key(target)
+        if not q or not t:
             return 0.0
-        pending = [t for t in dict.fromkeys((query, target)) if t not in self._cache]
+        pending = [k for k in dict.fromkeys((q, t)) if k not in self._cache]
         if pending:
             self._encode_into_cache(pending)
-        return _cosine(self._cache[query], self._cache[target])
+        return _cosine(self._cache[q], self._cache[t])
 
     def _encode_into_cache(self, texts: list[str]) -> None:
+        """`texts` 必须已经过 `_key` —— 调用方保证，这样缓存键与被编码的
+        文本天然是同一个字符串，不存在"key 与向量对不上"的中间状态。"""
         vectors = self._embedder.encode(texts)
         if len(vectors) != len(texts):
             raise ValueError(f"embedder 返回 {len(vectors)} 条向量，但请求了 {len(texts)} 条")

@@ -136,3 +136,49 @@ def test_encode_calls_counter_tracks_real_encoding_work():
     scorer.relevance("丙", "甲")
 
     assert scorer.encode_calls == 3
+
+
+def test_surrounding_whitespace_shares_one_cache_entry():
+    """`"甲"` 与 `" 甲 "` 是同一段文本，不该各编码一次。
+
+    修之前它们各占一条缓存 —— 对 2026-07-27 那轮结论零影响（两条路线看到的
+    是同一份文本），纯属浪费。
+    """
+    fake = FakeEmbedder({"甲": [1.0, 0.0], "乙": [1.0, 0.0]})
+    scorer = VectorScorer(fake)
+
+    scorer.warm(["甲", " 甲 ", "甲\n"])
+    assert scorer.encode_calls == 1
+
+    assert scorer.relevance(" 甲 ", "\t甲") == pytest.approx(1.0)
+    assert scorer.encode_calls == 1  # 仍然没有新的编码
+
+
+def test_cache_key_and_encoded_text_are_the_same_string():
+    """真正危险的那个不变量：**只 strip key、却把原文送去 encode**，会让同一个
+    key 对应两个不同的向量，比不 strip 更糟 —— 那是静默的错误结果。
+
+    这条测试通过"送进 embedder 的每一段文本自己就是缓存键"来钉住它：
+    假 embedder 记录了每次收到的文本，逐条比对。
+    """
+    fake = FakeEmbedder({"甲": [1.0, 0.0]})
+    scorer = VectorScorer(fake)
+
+    scorer.warm([" 甲 ", "乙\n"])
+    scorer.relevance("  丙", "甲  ")
+
+    sent = [t for call in fake.calls for t in call]
+    assert sent == [t.strip() for t in sent]  # 送去编码的都是已 strip 的
+    assert set(sent) == set(scorer._cache)     # 且与缓存键一一对应
+
+
+def test_whitespace_only_text_still_scores_zero_without_encoding():
+    """全空白等于没有文本 —— 不该编码，也不该把零向量塞进缓存。"""
+    fake = FakeEmbedder({"甲": [1.0, 0.0]})
+    scorer = VectorScorer(fake)
+
+    assert scorer.relevance("   ", "甲") == 0.0
+    assert scorer.encode_calls == 0
+
+    scorer.warm(["  ", "\n", ""])
+    assert scorer.encode_calls == 0
