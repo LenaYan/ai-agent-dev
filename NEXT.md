@@ -22,7 +22,7 @@
 
 | 阶段 | 主题 | 状态 | 证据 / 备注 |
 |---|---|---|---|
-| 一 | LLM 与 Agent 地基（tool calling 最小循环） | ⬜ **未做** | `samples/` 为空。2026-07-06 立过两次待办，两次都没执行 |
+| 一 | LLM 与 Agent 地基（tool calling 最小循环） | ⬜ **未做** | `samples/` 为空。2026-07-06 在**三处**立过同一条待办（learning-log ×2 + `~/.copilot/work-log/` 的会话日志 ×1），**三次都没执行**，隔了 70 天 |
 | 二 | Agent 核心范式（ReAct、循环控制） | ⬜ **未做** | — |
 | 三 | 上下文与记忆（RAG） | 🟡 部分 | 做过字面 vs 向量受控对比（`cn-curriculum-graph/docs/rag-vs-literal.md`），但没做过 agent 侧的记忆 |
 | 四 | 主流框架（LangGraph） | ✅ 已验收 | 2026-07-27 手写 vs 框架受控实验。**注意：验收的是"用图描述流水线"，不是 agent** |
