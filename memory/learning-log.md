@@ -12,6 +12,18 @@
 
 ---
 
+## 2026-09-14 — 路线图阶段一：零框架手写 tool calling 最小循环（`samples/tool-call-loop`）
+
+- **按 ADR-0007 定域**：选了候选①**沙箱文件系统任务 agent**。②text-to-SQL 被否是因为轨迹偏平（基本一步出 SQL），阶段二、三都吃不上；③repo 小改动被否是环境搭建成本会在阶段一就把人拖住。①的三条好处叠加：终态断言免费、同一终态多路径（阶段三轨迹评估天然有意义）、天然带沙箱与权限（阶段八直接落地）。
+- **中途撞墙并改道（值得记）：GitHub Models 已退役，实测 `POST models.github.ai/inference/chat/completions` 返回 410 Gone**；GitHub Copilot 订阅**不提供**第三方程序可用的公开推理 API。本机既无 key 也无 Ollama。**应对不是停工，是把协议层与后端解耦**：循环只依赖一个 `LLMClient` 协议，默认实现对准 OpenAI 兼容 `/chat/completions`（Ollama / OpenRouter / DeepSeek / vLLM 通吃），另配 `ScriptedLLM`。**"没有后端"于是从阻塞项降级成一个配置项。**
+- **收获一：workflow 与 agent 的分界线，物理上就是一行 `if not reply.tool_calls: return`。** 它决定的不是"要不要再调一次工具"，而是**控制流写在代码里还是写在模型输出里**。`cn-curriculum-graph` 六层 DAG 的下一步在开发期就定死，这里的下一步运行期才知道。代价与收益锁在同一行：控制流不可预测 → `max_steps` 与轨迹记录**不是可选的工程增强，是这一行的连带义务**。
+- **收获二：工具失败必须变成普通的 `tool` 消息回灌，不能抛。** 一抛就中断循环，控制权又回到人写死的分支里——**agent 退化成 workflow 往往就发生在异常处理这一处**。`tools.dispatch` 把越界、坏 JSON、参数不匹配、OSError 全吃成字符串。
+- **收获三：prompt 工程在 agent 里有一大半发生在工具描述上**，不在 system prompt 里——schema 是模型唯一能看到的东西。另：assistant 消息必须**原样**塞回 `messages`（`tool_calls.id` 要和后续 `tool` 消息对上），故 `Reply.raw` 保留原始 dict；沙箱必须**先 resolve 再比较**，字符串前缀判断挡不住 `../..` 与符号链接。
+- **收获四（方法论，接 ADR-0006 那条教训）：假模型不是"没 key 时的替代品"，是让循环可测的前提。** 循环的正确性不该依赖一次真实采样——**真实模型的不确定性只该用来测模型，不该用来测代码**。并且判据自己要能判错：`test_task_checks_reject_wrong_final_state` 专门断言"什么都不做时三个任务全 FAIL"，防的正是 2026-07-28「判据本身太脆」那类自欺。
+- **产出**：`samples/tool-call-loop/`（沙箱 + 3 工具 + 循环 + `Trajectory` + 3 个终态断言任务 + CLI），**零运行时依赖**（stdlib 发 HTTP，故意不用 SDK——阶段一要学的正是那层线上格式）。11 测试全绿；CLI 端到端跑通（对本地假服务器，PASS、1 次工具调用）。
+- **已知未验证项（不许含糊）**：**一次真实模型都没跑过。** 循环、协议解析、判据都验过；"真实模型会不会选对工具"零证据。另：未做 Anthropic `tool_use` 块格式、未做并行工具调用、任务只有 3 个（n=3，别算通过率）。
+- 下一步：**接一个真实后端跑 `--all`**（本机装 Ollama 拉一个支持 tool calling 的模型，或给 `.env` 填 DeepSeek key），观察真实模型的轨迹与失败模式；然后才是阶段二把它扩成 ReAct 并**主动让它失败**（去掉 `max_steps` 看死循环、喂垃圾工具返回看它被带偏）。
+
 ## 2026-09-14 — 从一篇行业文章绕回工作区自检：「走歪了」这个判断，一半不成立
 
 - **起点与产出**：检索并翻译 Amodei《We Must Pace the Frontier》（2026-09-12），延伸讨论 RSI/意识、算力依赖、新增岗位方向，最后回头诊断本工作区。完整过程存 `sessions/2026-09-14-pacing-the-frontier-and-career-direction.md`，术语 +8 条进 `glossary.md`。

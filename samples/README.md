@@ -13,3 +13,9 @@ samples/
     main.py
     requirements.txt (或 pyproject.toml)
 ```
+
+## 目录
+
+| 子目录 | 主题 | 路线图阶段 |
+|---|---|---|
+| `tool-call-loop/` | 零框架手写「LLM + 工具调用」最小循环（沙箱文件系统任务 agent，带程序化终态断言） | 阶段一 |
