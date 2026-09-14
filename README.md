@@ -6,6 +6,7 @@
 
 ```
 .
+├── NEXT.md                       # 当前站位 + 阶段状态 + 下一个动作（覆盖式，会话开始必读）
 ├── AGENTS.md                     # 基础配置：背景 + 协作规约（单一事实来源）
 ├── CLAUDE.md                     # Claude Code 入口，@导入 AGENTS.md（双工具支持）
 ├── .github/
@@ -16,6 +17,7 @@
 ├── samples/                      # 可运行的最小示例 / spike
 ├── practice/                     # 有结构的练习项目
 ├── notes/                        # 速记、临时素材
+├── sessions/                     # 重要会话存档（过程与推理链条，结论仍以 memory/ 为准）
 └── memory/                       # 跨会话记忆（AI 长期上下文）
     ├── README.md                 # 记忆运维规则
     ├── learning-log.md           # 学习日志
@@ -26,9 +28,9 @@
 
 ## 快速开始
 
-1. 读 `docs/roadmap.md` 选一个当前阶段主题。
-2. 在 `samples/` 或 `practice/` 建一个子目录动手。
-3. 学完后按 `memory/README.md` 更新记忆。
+1. 读 **`NEXT.md`** —— 当前站在哪、下一个具体动作是什么。
+2. 在 `samples/` 或 `practice/` 建一个子目录动手（阶段背景见 `docs/roadmap.md`）。
+3. 学完后按 `memory/README.md` 更新记忆，并**覆盖更新 `NEXT.md`**。
 
 ## 约定
 

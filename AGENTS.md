@@ -22,6 +22,8 @@
 | `memory/` | **跨会话记忆**（见 `memory/README.md`），AI 的长期上下文 |
 | `sessions/` | 重要会话的完整存档（过程与推理链条）。**结论仍以 `memory/` 为准**，见 `sessions/README.md` |
 
+根目录另有 **`NEXT.md`**：当前站位 + 路线图阶段完成状态 + 下一个具体动作。**覆盖式维护，不追加**——它回答"整体还缺什么"，而 learning-log 回答"上一轮停在哪"。
+
 ## 3. 协作规约（给 AI 助手）
 
 > 贯穿全程的心法见 `docs/effective-agents-principles.md`（Anthropic《Building Effective Agents》）：①不要什么都做成 Agent（先问 workflow 是否更对）②尽可能久地保持简单 ③像你的 Agent 一样思考。设计任何 Agent 时默认遵循。
@@ -56,9 +58,10 @@
 - 触发（完成主题 / 选型决策 / 踩坑 / 学到关键术语）后按 `memory/README.md` 更新对应文件，并在回复末尾简要说明"已更新 memory/xxx"。
 
 **会话交接（跨机器/跨工具，Git 是唯一同步通道）**
-- **会话开始**：先 `git pull`，再浏览 `memory/learning-log.md` 最新一条（尤其"下一步"字段）接上下文。
-- **会话结束**：更新 memory → commit → push，**半成品也要推**（WIP commit 可接受，学习仓库不追求提交历史干净）。AI 助手在会话收尾时应主动提醒或代办。
+- **会话开始**：先 `git pull`，再读 **`NEXT.md`**（当前站位与下一个动作），然后浏览 `memory/learning-log.md` 最新一条（尤其"下一步"字段）接上下文。**两者都要读**：learning-log 给的是"上一轮停在哪"，`NEXT.md` 给的是"整体缺什么"——只读前者会让跨阶段的待办永远轮不到（2026-09-14 的教训，见 `memory/pitfalls.md`）。
+- **会话结束**：更新 memory → **若阶段状态或下一个动作变了就改 `NEXT.md`（覆盖，不追加）** → commit → push，**半成品也要推**（WIP commit 可接受，学习仓库不追求提交历史干净）。AI 助手在会话收尾时应主动提醒或代办。
 - 任务中途中断时，在 learning-log 的"下一步"写清断点与卡点（比"继续做 xxx"具体），供另一台机器/另一个工具接手。
+- **警惕"收尾式停顿"**：一个项目做到自然完成态时最容易静默停摆，因为它不像中断，不会触发任何"该回来了"的信号。这种时候尤其要回 `NEXT.md` 对一遍阶段状态表。
 - 新 sample 引入新密钥时同步更新 `.env.example`，保证另一台机器缺什么一目了然。
 
 **边界**
@@ -67,6 +70,7 @@
 
 ## 6. 相关文件
 
+- **当前站位与下一步：`NEXT.md`**（会话开始必读）
 - 学习路线图：`docs/roadmap.md`
 - 记忆运维规则：`memory/README.md`
 - 补充说明：`.github/copilot-instructions.md`（Copilot 读取，内容已并入本文件）
